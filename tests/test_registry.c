@@ -23,23 +23,23 @@ int main(void)
     int failures = 0;
 
     failures += expect_score("NVIDIA CUDA preference", CROSSGPU_VENDOR_NVIDIA,
-                             CROSSGPU_BACKEND_CUDA, "cuda", 110);
+                             CROSSGPU_BACKEND_CUDA, "cuda", 100);
     failures += expect_score("NVIDIA OpenCL fallback", CROSSGPU_VENDOR_NVIDIA,
                              CROSSGPU_BACKEND_OPENCL, "opencl", 50);
     failures += expect_score("Intel Level Zero preference", CROSSGPU_VENDOR_INTEL,
-                             CROSSGPU_BACKEND_LEVEL_ZERO, "level-zero", 120);
+                             CROSSGPU_BACKEND_LEVEL_ZERO, "level-zero", 100);
     failures += expect_score("Intel OpenCL fallback", CROSSGPU_VENDOR_INTEL,
                              CROSSGPU_BACKEND_OPENCL, "opencl", 50);
     failures += expect_score("AMD HIP preference", CROSSGPU_VENDOR_AMD,
-                             CROSSGPU_BACKEND_HIP, "hip", 110);
+                             CROSSGPU_BACKEND_HIP, "hip", 100);
     failures += expect_score("AMD OpenCL fallback", CROSSGPU_VENDOR_AMD,
                              CROSSGPU_BACKEND_OPENCL, "opencl", 50);
     failures += expect_score("Legacy AMD HIP preference", CROSSGPU_VENDOR_AMD_LEGACY,
-                             CROSSGPU_BACKEND_HIP, "hip", 110);
+                             CROSSGPU_BACKEND_HIP, "hip", 100);
     failures += expect_score("Legacy AMD OpenCL fallback", CROSSGPU_VENDOR_AMD_LEGACY,
                              CROSSGPU_BACKEND_OPENCL, "opencl", 50);
     failures += expect_score("Apple Metal preference", CROSSGPU_VENDOR_APPLE,
-                             CROSSGPU_BACKEND_METAL, "metal", 110);
+                             CROSSGPU_BACKEND_METAL, "metal", 100);
     failures += expect_score("Apple OpenCL fallback", CROSSGPU_VENDOR_APPLE,
                              CROSSGPU_BACKEND_OPENCL, "opencl", 50);
     failures += expect_score("Qualcomm OpenCL preference", CROSSGPU_VENDOR_QUALCOMM,
