@@ -1,3 +1,7 @@
+<p align="left">
+  <img src="./assets/image.png" width="280" alt="CrossGPU Logo">
+</p>
+
 # CrossGPU
 
 CrossGPU is a C11 command-line GPU stress tester built around a versioned,
