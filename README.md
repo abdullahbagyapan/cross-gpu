@@ -13,10 +13,10 @@ vendor runtimes.
 | Backend | Build switch | Host support |
 |---|---|---|
 | OpenCL | `WITH_OPENCL=1` (default) | Linux, macOS, Windows |
-| CUDA | `WITH_CUDA=1` | Linux |
-| HIP | `WITH_HIP=1` | Linux |
+| CUDA | `WITH_CUDA=1` | Linux, Windows |
+| HIP | `WITH_HIP=1` | Linux, Windows |
 | Metal | `WITH_METAL=1` | macOS |
-| Intel Level Zero | `WITH_LEVEL_ZERO=1` | Linux |
+| Intel Level Zero | `WITH_LEVEL_ZERO=1` | Linux, Windows |
 
 The optional backends require their respective compiler, SDK, runtime, and
 compatible GPU. OpenCL uses the project's minimal declarations and loads the
@@ -46,6 +46,21 @@ make WITH_OPENCL=1 WITH_CUDA=1 WITH_HIP=1 WITH_LEVEL_ZERO=1
 make WITH_METAL=1
 make WITH_OPENCL=1 WITH_METAL=1
 ```
+
+On Windows, build the available vendor plugins with the same switches:
+
+```sh
+make WITH_CUDA=1
+make WITH_HIP=1
+make WITH_LEVEL_ZERO=1
+```
+
+CUDA on Windows requires a CUDA Toolkit and its supported MSVC host compiler;
+HIP requires AMD's HIP SDK; Level Zero requires the Level Zero headers, loader,
+and OCLOC. The Windows Level Zero linker input is `ze_loader.lib` by default;
+override `LEVEL_ZERO_LIBS` if the SDK uses a different path or name.
+Native Windows vendor-SDK and hardware validation is still required before
+relying on these plugins in production.
 
 To omit the default OpenCL plugin, use `make WITH_OPENCL=0`. Run `make clean`
 before changing the enabled backend set to prevent old plugins remaining in the

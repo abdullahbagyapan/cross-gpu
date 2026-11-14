@@ -3,6 +3,7 @@
 #include <level_zero/ze_api.h>
 
 #include <algorithm>
+#include <cstddef>
 #include <cinttypes>
 #include <cstdint>
 #include <cstdio>
@@ -14,8 +15,8 @@
 #include <vector>
 
 extern "C" {
-extern const unsigned char _binary_levelzero_kernels_spv_start[];
-extern const unsigned char _binary_levelzero_kernels_spv_end[];
+extern const unsigned char crossgpu_levelzero_kernels_spv[];
+extern const size_t crossgpu_levelzero_kernels_spv_size;
 }
 
 namespace {
@@ -447,12 +448,8 @@ int device_open(uint32_t index, void **device_context_out,
         ze_module_desc_t module_desc{};
         module_desc.stype = ZE_STRUCTURE_TYPE_MODULE_DESC;
         module_desc.format = ZE_MODULE_FORMAT_IL_SPIRV;
-        const uintptr_t kernel_begin = reinterpret_cast<uintptr_t>(
-            _binary_levelzero_kernels_spv_start);
-        const uintptr_t kernel_end = reinterpret_cast<uintptr_t>(
-            _binary_levelzero_kernels_spv_end);
-        module_desc.inputSize = static_cast<size_t>(kernel_end - kernel_begin);
-        module_desc.pInputModule = _binary_levelzero_kernels_spv_start;
+        module_desc.inputSize = crossgpu_levelzero_kernels_spv_size;
+        module_desc.pInputModule = crossgpu_levelzero_kernels_spv;
         if (!check_result(zeModuleCreate(context->context, context->record->device,
                                          &module_desc, &context->module, nullptr),
                           "build Level Zero SPIR-V module (check ocloc/driver compatibility)",

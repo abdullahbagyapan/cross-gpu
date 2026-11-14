@@ -2,18 +2,18 @@
 
 This plugin is a separate C++ shared library. It uses the Level Zero loader
 (`libze_loader`) at runtime and compiles its OpenCL C kernel source to generic
-SPIR-V with Intel OCLOC at build time, then embeds the SPIR-V through GNU
-`ld -r -b binary`. It does not call the OpenCL runtime and does not require
-Python.
+SPIR-V with Intel OCLOC at build time. A native build helper converts that binary
+to C++ source and links it into the plugin. It does not call the OpenCL runtime
+and does not require Python or GNU `ld`.
 
 ## Requirements
 
-- Linux
+- Linux or Windows
 - Level Zero API 1.10+ development headers
 - Level Zero loader library (`libze_loader`)
 - Intel GPU runtime/driver implementing Level Zero
 - Intel OpenCL Offline Compiler (`ocloc`) for SPIR-V generation
-- A C++14 compiler and GNU binutils (`ld`)
+- A C++14 compiler
 
 The Level Zero loader/header packages are distributed by the
 [oneAPI Level Zero project](https://github.com/oneapi-src/level-zero/releases).
@@ -31,7 +31,8 @@ make WITH_LEVEL_ZERO=1
 ```
 
 For non-standard SDK paths, override `LEVEL_ZERO_CPPFLAGS`, `LEVEL_ZERO_LIBS`,
-and `OCLOC`. For example:
+and `OCLOC`. On Windows, `LEVEL_ZERO_LIBS` defaults to `ze_loader.lib`; on Linux
+it defaults to `-lze_loader`. For example:
 
 ```sh
 make WITH_LEVEL_ZERO=1 \
@@ -40,10 +41,14 @@ make WITH_LEVEL_ZERO=1 \
   OCLOC=/opt/intel/ocloc/bin/ocloc
 ```
 
-The generated plugin is `build/backends/libcrossgpu_backend_level_zero.so`.
+The generated plugin is `build/backends/libcrossgpu_backend_level_zero.so` on
+Linux or `build/backends/crossgpu_backend_level_zero.dll` on Windows.
 Select it explicitly with `--backend level-zero`, or use automatic selection
 where it is preferred for Intel GPUs. Automatic cross-backend merging with
 OpenCL requires both plugins to report the same PCI BDF identity.
+
+The Windows build path requires native SDK and hardware validation before
+production use.
 
 ## Workloads
 

@@ -12,11 +12,9 @@ NVCC ?= nvcc
 HIPCC ?= hipcc
 METAL_CC ?= clang
 CXX ?= c++
-LD ?= ld
 OCLOC ?= ocloc
 LEVEL_ZERO_CXXFLAGS ?= -O2 -g
 LEVEL_ZERO_CPPFLAGS ?=
-LEVEL_ZERO_LIBS ?= -lze_loader
 NVCCFLAGS ?= -O2 -std=c++14
 HIPCCFLAGS ?= -O2 -std=c++14
 METALFLAGS ?= -O2
@@ -55,6 +53,9 @@ ifeq ($(CROSSGPU_OS),Windows)
     THREAD_LIBS :=
     OPENCL_PLATFORM_LIBS :=
     PATH_LIST_SEPARATOR := ;
+    CUDA_PLUGIN_FLAGS := -Xcompiler=/MD -shared
+    HIP_PLUGIN_FLAGS := -shared
+    LEVEL_ZERO_LIBS ?= ze_loader.lib
 else ifeq ($(CROSSGPU_OS),Apple)
     PREFIX ?= /usr/local
     PLATFORM_SOURCE := src/platform_apple.c
@@ -67,6 +68,9 @@ else ifeq ($(CROSSGPU_OS),Apple)
     THREAD_LIBS := -pthread
     OPENCL_PLATFORM_LIBS := -framework OpenGL
     PATH_LIST_SEPARATOR := :
+    CUDA_PLUGIN_FLAGS := -Xcompiler=-fPIC,-fvisibility=hidden -shared
+    HIP_PLUGIN_FLAGS := -fPIC -fvisibility=hidden -shared
+    LEVEL_ZERO_LIBS ?= -lze_loader
 else
     PREFIX ?= /usr/local
     PLATFORM_SOURCE := src/platform_linux.c
@@ -79,6 +83,9 @@ else
     THREAD_LIBS := -pthread
     OPENCL_PLATFORM_LIBS :=
     PATH_LIST_SEPARATOR := :
+    CUDA_PLUGIN_FLAGS := -Xcompiler=-fPIC,-fvisibility=hidden -shared
+    HIP_PLUGIN_FLAGS := -fPIC -fvisibility=hidden -shared
+    LEVEL_ZERO_LIBS ?= -lze_loader
 endif
 
 ifeq ($(WITH_METAL),1)
@@ -87,21 +94,26 @@ ifeq ($(WITH_METAL),1)
     endif
 endif
 ifeq ($(WITH_CUDA),1)
-    ifneq ($(CROSSGPU_OS),Linux)
-        $(error WITH_CUDA=1 is currently supported only on Linux)
+    ifneq ($(CROSSGPU_OS),Windows)
+        ifneq ($(CROSSGPU_OS),Linux)
+            $(error WITH_CUDA=1 requires Linux or Windows and the CUDA Toolkit)
+        endif
     endif
 endif
 ifeq ($(WITH_HIP),1)
-    ifneq ($(CROSSGPU_OS),Linux)
-        $(error WITH_HIP=1 is currently supported only on Linux)
+    ifneq ($(CROSSGPU_OS),Windows)
+        ifneq ($(CROSSGPU_OS),Linux)
+            $(error WITH_HIP=1 requires Linux or Windows and the HIP SDK)
+        endif
     endif
 endif
 ifeq ($(WITH_LEVEL_ZERO),1)
-    ifneq ($(CROSSGPU_OS),Linux)
-        $(error WITH_LEVEL_ZERO=1 is currently supported only on Linux)
+    ifneq ($(CROSSGPU_OS),Windows)
+        ifneq ($(CROSSGPU_OS),Linux)
+            $(error WITH_LEVEL_ZERO=1 requires Linux or Windows and the Level Zero SDK)
+        endif
     endif
 endif
-
 CPPFLAGS += -Iinclude -Isrc -Ibackends/opencl \
             -DCROSSGPU_DEFAULT_PLUGIN_DIR=\"$(PREFIX)/lib/cross-gpu/backends\"
 CFLAGS ?= -O2 -g
@@ -117,7 +129,8 @@ HIP_PLUGIN := $(BUILD_DIR)/backends/$(PLUGIN_PREFIX)hip.$(PLUGIN_SUFFIX)
 METAL_PLUGIN := $(BUILD_DIR)/backends/$(PLUGIN_PREFIX)metal.$(PLUGIN_SUFFIX)
 LEVEL_ZERO_PLUGIN := $(BUILD_DIR)/backends/$(PLUGIN_PREFIX)level_zero.$(PLUGIN_SUFFIX)
 LEVEL_ZERO_SPV := $(BUILD_DIR)/backends/levelzero_kernels.spv
-LEVEL_ZERO_SPV_OBJECT := $(BUILD_DIR)/backends/levelzero_kernels_spv.o
+LEVEL_ZERO_SPV_SOURCE := $(BUILD_DIR)/backends/levelzero_kernels_spv.cpp
+LEVEL_ZERO_EMBEDDER := $(BUILD_DIR)/tools/embed_binary$(EXE_SUFFIX)
 
 MOCK_CUDA_PLUGIN := $(BUILD_DIR)/test-backends/$(PLUGIN_PREFIX)cuda_mock.$(PLUGIN_SUFFIX)
 MOCK_OPENCL_PLUGIN := $(BUILD_DIR)/test-backends/$(PLUGIN_PREFIX)opencl_mock.$(PLUGIN_SUFFIX)
@@ -177,14 +190,14 @@ $(CUDA_PLUGIN): backends/cuda/cuda_backend.cu \
                 backends/common/runtime_backend_impl.hpp \
                 include/crossgpu_backend.h include/crossgpu_platform_config.h
 	@mkdir -p $(@D)
-	$(NVCC) $(NVCCFLAGS) -Xcompiler=-fPIC,-fvisibility=hidden -shared \
+	$(NVCC) $(NVCCFLAGS) $(CUDA_PLUGIN_FLAGS) \
 		-Iinclude -o $@ backends/cuda/cuda_backend.cu
 
 $(HIP_PLUGIN): backends/hip/hip_backend.hip \
                backends/common/runtime_backend_impl.hpp \
                include/crossgpu_backend.h include/crossgpu_platform_config.h
 	@mkdir -p $(@D)
-	$(HIPCC) $(HIPCCFLAGS) -fPIC -fvisibility=hidden -shared \
+	$(HIPCC) $(HIPCCFLAGS) $(HIP_PLUGIN_FLAGS) \
 		-Iinclude -o $@ backends/hip/hip_backend.hip
 
 $(METAL_PLUGIN): backends/metal/metal_backend.m include/crossgpu_backend.h include/crossgpu_platform_config.h
@@ -195,22 +208,27 @@ $(METAL_PLUGIN): backends/metal/metal_backend.m include/crossgpu_backend.h inclu
 
 
 # Level Zero runtime plugin. Kernels are compiled to generic SPIR-V at build
-# time with Intel's OCLOC tool; zeModuleCreate performs device-specific JIT
-# compilation at runtime. The core executable has no Level Zero dependency.
+# time with Intel's OCLOC tool. A native build-time helper converts the binary
+# to C++ source so the plugin can embed it on Linux and Windows without relying
+# on GNU ld's ELF-specific binary-object feature.
 $(LEVEL_ZERO_SPV): backends/levelzero/levelzero_kernels.cl
 	@mkdir -p $(@D)
 	@command -v "$(OCLOC)" >/dev/null 2>&1 || { echo "error: OCLOC not found; install Intel's OpenCL Offline Compiler or set OCLOC=/path/to/ocloc" >&2; exit 1; }
 	$(OCLOC) -q -spv_only -file $< -out_dir "$(@D)" -output_no_suffix
 	@test -s "$@" || { echo "error: OCLOC did not produce $@" >&2; exit 1; }
 
-$(LEVEL_ZERO_SPV_OBJECT): $(LEVEL_ZERO_SPV)
-	cd "$(@D)" && $(LD) -r -b binary -o "$(notdir $@)" "$(notdir $(LEVEL_ZERO_SPV))"
+$(LEVEL_ZERO_EMBEDDER): tools/embed_binary.c
+	@mkdir -p $(@D)
+	$(CC) $(CFLAGS) -o $@ $<
 
-$(LEVEL_ZERO_PLUGIN): backends/levelzero/levelzero_backend.cpp include/crossgpu_backend.h include/crossgpu_platform_config.h $(LEVEL_ZERO_SPV_OBJECT)
+$(LEVEL_ZERO_SPV_SOURCE): $(LEVEL_ZERO_SPV) $(LEVEL_ZERO_EMBEDDER)
+	$(LEVEL_ZERO_EMBEDDER) "$<" "$@"
+
+$(LEVEL_ZERO_PLUGIN): backends/levelzero/levelzero_backend.cpp include/crossgpu_backend.h include/crossgpu_platform_config.h $(LEVEL_ZERO_SPV_SOURCE)
 	@mkdir -p $(@D)
 	$(CXX) $(CPPFLAGS) $(LEVEL_ZERO_CPPFLAGS) $(LEVEL_ZERO_CXXFLAGS) \
 		-I$(BUILD_DIR)/backends -std=c++14 -Wall -Wextra -Wpedantic $(PLUGIN_CFLAGS) \
-		$(SHARED_FLAGS) -o $@ backends/levelzero/levelzero_backend.cpp $(LEVEL_ZERO_SPV_OBJECT) $(LEVEL_ZERO_LIBS)
+		$(SHARED_FLAGS) -o $@ backends/levelzero/levelzero_backend.cpp $(LEVEL_ZERO_SPV_SOURCE) $(LEVEL_ZERO_LIBS)
 
 
 $(REGISTRY_TEST): tests/test_registry.c src/registry.c src/registry.h include/crossgpu_backend.h include/crossgpu_platform_config.h
@@ -312,7 +330,6 @@ print-config:
 	@echo "HIPCC=$(HIPCC)"
 	@echo "METAL_CC=$(METAL_CC)"
 	@echo "OCLOC=$(OCLOC)"
-	@echo "LD=$(LD)"
 	@echo "PREFIX=$(PREFIX)"
 	@echo "CROSSGPU_OS=$(CROSSGPU_OS)"
 	@echo "PLATFORM_SOURCE=$(PLATFORM_SOURCE)"

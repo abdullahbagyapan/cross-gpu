@@ -22,8 +22,8 @@ not a release schedule.
 - Validate every optional backend against its vendor SDK, driver, and
   representative hardware.
 - Validate macOS OpenCL-to-Metal identity mapping on physical hardware.
-- Validate the Windows build and mock-plugin checks in a native MinGW-w64 UCRT64
-  environment.
+- Validate CUDA, HIP, and Level Zero plugin builds and workloads on native
+  Windows SDK installations and representative hardware.
 
 ## Workload controls and reporting
 

@@ -20,8 +20,8 @@ The Makefile exposes these targets:
 The Makefile selects one platform adapter: `src/platform_linux.c`,
 `src/platform_apple.c`, or `src/platform_windows.c`. The adapters provide the
 dynamic loader, directory enumeration, executable-path lookup, timing, mutexes,
-and worker threads. CUDA, HIP, and Level Zero builds are restricted to Linux;
-Metal builds are restricted to macOS.
+and worker threads. CUDA, HIP, and Level Zero builds are supported on Linux and
+Windows; Metal builds are restricted to macOS.
 
 ## Discovery and device grouping
 
