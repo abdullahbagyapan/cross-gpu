@@ -1,0 +1,115 @@
+name: Build and Test
+
+on:
+  push:
+    branches:
+      - master
+      - main
+  pull_request:
+    branches:
+      - master
+      - main
+  workflow_dispatch:
+
+# CI only builds and tests repository contents; it never needs write access.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    name: Linux / ${{ matrix.compiler }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler:
+          - gcc
+          - clang
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes build-essential clang
+
+      - name: Build
+        run: |
+          make clean
+          make -j2 CC=${{ matrix.compiler }}
+
+      - name: Test
+        run: make check CC=${{ matrix.compiler }}
+
+  macos:
+    name: macOS / Clang / OpenCL + Metal
+    # macos-15 is an Apple Silicon runner and includes the Metal SDK.
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Show Apple toolchain
+        run: |
+          xcodebuild -version
+          clang --version
+
+      - name: Build OpenCL and Metal plugins
+        run: |
+          make clean
+          make -j2 CC=clang WITH_OPENCL=1 WITH_METAL=1
+
+      - name: Test
+        run: make check CC=clang WITH_OPENCL=1 WITH_METAL=1
+
+  windows:
+    name: Windows / MinGW-w64 UCRT64
+    runs-on: windows-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      # MSYS2 documents that checkout line-ending conversion can break shell
+      # tools; configure Git before checkout as recommended by MSYS2.
+      - name: Configure Git line endings
+        shell: pwsh
+        run: git config --global core.autocrlf input
+
+      - name: Checkout source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up MSYS2 UCRT64
+        uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2.33.0
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            base-devel
+            mingw-w64-ucrt-x86_64-gcc
+
+      - name: Show Windows toolchain
+        run: |
+          gcc --version
+          make --version
+
+      - name: Build
+        run: |
+          make clean
+          make -j2
+
+      - name: Test
+        run: make check
