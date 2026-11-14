@@ -34,8 +34,8 @@ else
 endif
 
 ifeq ($(CROSSGPU_OS),Windows)
-    # GNU Make's built-in CC is often `cc` (MSYS runtime) on Windows; force
-    # the native UCRT64 compiler unless the caller explicitly overrides it.
+    # GNU Make's built-in CC is often `cc` (MSYS runtime) on Windows;
+    # force the native UCRT64 compiler unless explicitly overridden.
     ifeq ($(origin CC),default)
         CC := gcc
     endif
@@ -86,6 +86,15 @@ else
     CUDA_PLUGIN_FLAGS := -Xcompiler=-fPIC,-fvisibility=hidden -shared
     HIP_PLUGIN_FLAGS := -fPIC -fvisibility=hidden -shared
     LEVEL_ZERO_LIBS ?= -lze_loader
+endif
+
+# Convert paths from the build shell to the target executable's format.
+# Native Windows executables require Windows paths even when GNU Make runs
+# inside the MSYS2 POSIX environment.
+ifeq ($(CROSSGPU_OS),Windows)
+    native_path = $(shell cygpath -m "$(1)")
+else
+    native_path = $(1)
 endif
 
 ifeq ($(WITH_METAL),1)
@@ -283,26 +292,37 @@ $(MOCK_WRONG_VENDOR_LEVEL_ZERO_PLUGIN): tests/mock_backend.c include/crossgpu_ba
 		$(PLUGIN_CFLAGS) $(SHARED_FLAGS) -o $@ tests/mock_backend.c
 
 check: all $(REGISTRY_TEST) $(MOCK_INTEL_LEVEL_ZERO_PLUGIN) $(MOCK_INTEL_OPENCL_PLUGIN) $(MOCK_WRONG_VENDOR_LEVEL_ZERO_PLUGIN) $(MOCK_CUDA_PLUGIN) $(MOCK_OPENCL_PLUGIN) $(MOCK_CUSTOM_PLUGIN) $(MOCK_OPENCL_OTHER_NAMESPACE_PLUGIN)
-	set -eu; \
+	set -eux; \
 	./$(REGISTRY_TEST); \
 	CROSSGPU_PLUGIN_PATH_ONLY=1; export CROSSGPU_PLUGIN_PATH_ONLY; \
-	PLUGIN_PATH="$(abspath $(BUILD_DIR)/test-backends)"; \
+	PLUGIN_PATH="$(call native_path,$(abspath $(BUILD_DIR)/test-backends))"; \
+	OTHER_NAMESPACE_PLUGIN_PATH="$(call native_path,$(abspath $(BUILD_DIR)/test-backends-other-namespace))"; \
+	INTEL_PLUGIN_PATH="$(call native_path,$(abspath $(BUILD_DIR)/test-backends-intel))"; \
+	WRONG_VENDOR_PLUGIN_PATH="$(call native_path,$(abspath $(BUILD_DIR)/test-backends-wrong-vendor))"; \
 	./$(PROGRAM) --help | grep -q "cross-gpu list"; \
 	./$(PROGRAM) --help | grep -q "compute, memory, bandwidth, or all"; \
 	CROSSGPU_PLUGIN_PATH="$$PLUGIN_PATH" ./$(PROGRAM) list | grep -q "Mock GPU"; \
 	CROSSGPU_PLUGIN_PATH="$$PLUGIN_PATH" ./$(PROGRAM) list | awk 'BEGIN { n=0 } /^[[:space:]]*[0-9]+[[:space:]]/ { n++ } END { exit (n == 1 ? 0 : 1) }'; \
 	CROSSGPU_PLUGIN_PATH="$$PLUGIN_PATH" ./$(PROGRAM) info | grep -q "cuda"; \
-	CROSSGPU_PLUGIN_PATH="$$PLUGIN_PATH" ./$(PROGRAM) run --device 0 --test all --duration 300ms > $(BUILD_DIR)/check-run.log 2>&1; \
+	if ! CROSSGPU_PLUGIN_PATH="$$PLUGIN_PATH" ./$(PROGRAM) run \
+		--device 0 --test all --duration 300ms \
+		> $(BUILD_DIR)/check-run.log 2>&1; then \
+		cat $(BUILD_DIR)/check-run.log; exit 1; \
+	fi; \
 	grep -q "preferred backend failed; using opencl" $(BUILD_DIR)/check-run.log; \
 	grep -q "Stress run completed." $(BUILD_DIR)/check-run.log; \
-	CROSSGPU_PLUGIN_PATH="$$PLUGIN_PATH$(PATH_LIST_SEPARATOR)$(abspath $(BUILD_DIR)/test-backends-other-namespace)" ./$(PROGRAM) list | awk 'BEGIN { n=0 } /^[[:space:]]*[0-9]+[[:space:]]/ { n++ } END { exit (n == 2 ? 0 : 1) }'; \
-	INTEL_PLUGIN_PATH="$(abspath $(BUILD_DIR)/test-backends-intel)"; \
+	CROSSGPU_PLUGIN_PATH="$$PLUGIN_PATH$(PATH_LIST_SEPARATOR)$$OTHER_NAMESPACE_PLUGIN_PATH" \
+		./$(PROGRAM) list | awk 'BEGIN { n=0 } /^[[:space:]]*[0-9]+[[:space:]]/ { n++ } END { exit (n == 2 ? 0 : 1) }'; \
 	CROSSGPU_PLUGIN_PATH="$$INTEL_PLUGIN_PATH" ./$(PROGRAM) list | awk 'BEGIN { n=0 } /^[[:space:]]*[0-9]+[[:space:]]/ { n++ } END { exit (n == 1 ? 0 : 1) }'; \
 	CROSSGPU_PLUGIN_PATH="$$INTEL_PLUGIN_PATH" ./$(PROGRAM) info | grep -q "Preferred backend: level-zero"; \
 	CROSSGPU_PLUGIN_PATH="$$INTEL_PLUGIN_PATH" ./$(PROGRAM) info | grep -q "Fallbacks:.*opencl"; \
-	CROSSGPU_PLUGIN_PATH="$$INTEL_PLUGIN_PATH" ./$(PROGRAM) run --device 0 --test compute --duration 300ms > $(BUILD_DIR)/check-level-zero-fallback.log 2>&1; \
+	if ! CROSSGPU_PLUGIN_PATH="$$INTEL_PLUGIN_PATH" ./$(PROGRAM) run \
+		--device 0 --test compute --duration 300ms \
+		> $(BUILD_DIR)/check-level-zero-fallback.log 2>&1; then \
+		cat $(BUILD_DIR)/check-level-zero-fallback.log; exit 1; \
+	fi; \
 	grep -q "preferred backend failed; using opencl" $(BUILD_DIR)/check-level-zero-fallback.log; \
-	if CROSSGPU_PLUGIN_PATH="$(abspath $(BUILD_DIR)/test-backends-wrong-vendor)" ./$(PROGRAM) list | grep -q "Mock GPU"; then \
+	if CROSSGPU_PLUGIN_PATH="$$WRONG_VENDOR_PLUGIN_PATH" ./$(PROGRAM) list | grep -q "Mock GPU"; then \
 		echo "Level Zero was incorrectly accepted for a non-Intel device" >&2; exit 1; \
 	fi; \
 	echo "All tests passed (registry, discovery, vendor preference, fallbacks, identity merge, namespace isolation, Level Zero vendor restriction)."
