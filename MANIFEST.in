@@ -1,0 +1,7 @@
+include LICENSE
+include README.md
+include Makefile
+include cross-gpu
+include docs/cross-gpu.1
+recursive-include cross_gpu/kernels README.md .gitkeep
+recursive-include tests *.py
