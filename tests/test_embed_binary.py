@@ -14,6 +14,7 @@ from cross_gpu.embed_binary import (
     compile_kernel_runtime,
     compute_cache_key,
     decode_payload,
+    default_cache_dir,
     encode_payload,
     get_embedded_kernel,
     pack_kernels,
@@ -205,6 +206,68 @@ class TestEmbedBinary(unittest.TestCase):
         )
         self.assertEqual(raw, b"hello")
         self.assertEqual(scan_kernels_directory(), {})
+
+    def test_os_standard_cache_directories_and_sandbox_fallback(self) -> None:
+        fake_home = Path("/fake/home")
+
+        # Linux: respects absolute XDG_CACHE_HOME
+        self.assertEqual(
+            default_cache_dir(
+                platform_name="linux",
+                env={"XDG_CACHE_HOME": "/var/cache/custom"},
+                home=fake_home,
+            ),
+            Path("/var/cache/custom/cross-gpu"),
+        )
+
+        # Linux: ignores relative XDG_CACHE_HOME per XDG spec and falls back to ~/.cache
+        self.assertEqual(
+            default_cache_dir(
+                platform_name="linux",
+                env={"XDG_CACHE_HOME": "relative/cache"},
+                home=fake_home,
+            ),
+            fake_home / ".cache" / "cross-gpu",
+        )
+
+        # Linux: unset XDG_CACHE_HOME falls back to ~/.cache/cross-gpu
+        self.assertEqual(
+            default_cache_dir(platform_name="linux", env={}, home=fake_home),
+            fake_home / ".cache" / "cross-gpu",
+        )
+
+        # macOS: ~/Library/Caches/cross-gpu
+        self.assertEqual(
+            default_cache_dir(platform_name="darwin", env={}, home=fake_home),
+            fake_home / "Library" / "Caches" / "cross-gpu",
+        )
+
+        # Explicit CROSS_GPU_CACHE_DIR override takes precedence on any platform
+        self.assertEqual(
+            default_cache_dir(
+                platform_name="darwin",
+                env={"CROSS_GPU_CACHE_DIR": "/tmp/cg-override"},
+                home=fake_home,
+            ),
+            Path("/tmp/cg-override"),
+        )
+
+        # Unset/unavailable HOME degrades safely to None (in-memory-only cache)
+        with mock.patch("pathlib.Path.home", side_effect=RuntimeError("no home")):
+            self.assertIsNone(default_cache_dir(platform_name="linux", env={}))
+            self.assertIsNone(default_cache_dir(platform_name="darwin", env={}))
+            with mock.patch.dict("os.environ", {}, clear=True):
+                mem_only = RuntimeBinaryCache()
+                self.assertIsNone(mem_only.cache_dir)
+                compiled = compile_kernel_runtime(
+                    "opencl",
+                    "compute-fp32",
+                    "arch",
+                    capabilities=DeviceCapabilities(fp32=True),
+                    source_override="__kernel void kernel_compute_fp32(void) {}",
+                    cache=mem_only,
+                )
+                self.assertIs(mem_only.get(compiled.cache_key), compiled)
 
 
 if __name__ == "__main__":

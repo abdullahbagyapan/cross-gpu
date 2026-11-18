@@ -13,7 +13,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 import zlib
 import ctypes
 
@@ -106,19 +106,59 @@ def compute_cache_key(
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def _safe_home_dir(home: Path | None = None) -> Path | None:
+    if home is not None:
+        return home
+    try:
+        return Path.home()
+    except (RuntimeError, OSError):
+        return None
+
+
+def default_cache_dir(
+    *,
+    platform_name: str | None = None,
+    env: Mapping[str, str] | None = None,
+    home: Path | None = None,
+) -> Path | None:
+    """Resolve the OS-standard runtime binary cache directory, or None if unavailable.
+
+    - Explicit override: $CROSS_GPU_CACHE_DIR
+    - macOS: ~/Library/Caches/cross-gpu
+    - Linux/POSIX: $XDG_CACHE_HOME/cross-gpu (if absolute), fallback ~/.cache/cross-gpu
+    """
+    active_env = os.environ if env is None else env
+    explicit = active_env.get("CROSS_GPU_CACHE_DIR", "").strip()
+    if explicit:
+        return Path(explicit)
+
+    active_platform = sys.platform if platform_name is None else platform_name
+    if active_platform == "darwin":
+        resolved_home = _safe_home_dir(home)
+        if resolved_home is None:
+            return None
+        return resolved_home / "Library" / "Caches" / "cross-gpu"
+
+    xdg_cache = active_env.get("XDG_CACHE_HOME", "").strip()
+    if xdg_cache:
+        xdg_path = Path(xdg_cache)
+        if xdg_path.is_absolute():
+            return xdg_path / "cross-gpu"
+
+    resolved_home = _safe_home_dir(home)
+    if resolved_home is None:
+        return None
+    return resolved_home / ".cache" / "cross-gpu"
+
+
 class RuntimeBinaryCache:
     """In-memory + best-effort disk cache for compiled kernel binaries."""
 
     def __init__(self, cache_dir: Path | None = None) -> None:
         self._memory: dict[str, CompiledKernelBinary] = {}
-        if cache_dir is not None:
-            self.cache_dir: Path | None = cache_dir
-        else:
-            env_dir = os.environ.get("CROSS_GPU_CACHE_DIR")
-            if env_dir:
-                self.cache_dir = Path(env_dir)
-            else:
-                self.cache_dir = Path.home() / ".cache" / "cross-gpu" / "binaries"
+        self.cache_dir: Path | None = (
+            cache_dir if cache_dir is not None else default_cache_dir()
+        )
 
     def get(self, cache_key: str) -> CompiledKernelBinary | None:
         if cache_key in self._memory:
