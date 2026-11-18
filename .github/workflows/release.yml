@@ -1,0 +1,57 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and publish release artifacts
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run pre-release verification checks
+        run: |
+          python3 -m compileall -q cross_gpu tests
+          python3 -m unittest discover -s tests -v
+          python3 -m cross_gpu.embed_binary verify
+
+      - name: Build sdist and wheel
+        run: |
+          python3 -m pip install --upgrade build
+          python3 -m build --outdir dist
+
+      - name: Generate SHA256SUMS
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum *.tar.gz *.whl > SHA256SUMS
+          sha256sum -c SHA256SUMS
+
+      - name: Publish GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            gh release upload "${TAG}" dist/*.tar.gz dist/*.whl dist/SHA256SUMS --clobber
+          else
+            gh release create "${TAG}" dist/*.tar.gz dist/*.whl dist/SHA256SUMS \
+              --title "${TAG}" \
+              --generate-notes
+          fi
