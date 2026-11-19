@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import difflib
 import inspect
 import json
 import math
@@ -14,6 +15,7 @@ from typing import Any, Callable, Mapping, Sequence, TextIO
 from cross_gpu import __version__
 from cross_gpu.backends.base import DiagCallback
 from cross_gpu.backends.registry import (
+    KNOWN_BACKENDS,
     enumerate_all_backend_devices,
     enumerate_all_backend_devices_with_diagnostics,
 )
@@ -29,6 +31,61 @@ _DURATION_MULTIPLIERS: dict[str, float] = {
     "m": 60.0,
     "h": 3600.0,
 }
+_SUBCOMMANDS: tuple[str, ...] = ("list", "info", "run")
+_INVALID_COMMAND_RE = re.compile(
+    r"(?:argument\s+command:\s*)?invalid choice:\s*'([^']+)'",
+    re.IGNORECASE,
+)
+
+_ROOT_EXAMPLES_EPILOG = """\
+Examples:
+  cross-gpu list
+  cross-gpu info --json
+  cross-gpu run --device 0 --test compute-fp32,memory-pattern --warmup 5s --duration 30s
+  cross-gpu run --backend opencl --test all --duration 60s --json
+"""
+
+_LIST_EXAMPLES_EPILOG = """\
+Examples:
+  cross-gpu list
+  cross-gpu list --json
+  cross-gpu list --verbose
+"""
+
+_INFO_EXAMPLES_EPILOG = """\
+Examples:
+  cross-gpu info
+  cross-gpu info --json
+  cross-gpu info --json --verbose
+"""
+
+_RUN_EXAMPLES_EPILOG = """\
+Examples:
+  cross-gpu run --device 0 --test compute-fp32,memory-pattern --warmup 5s --duration 30s
+  cross-gpu run --backend opencl --test all --duration 60s --json
+  cross-gpu run --test compute-fp32 --duration 10s --verbose
+"""
+
+
+def suggest_close_matches(token: str, candidates: Sequence[str]) -> list[str]:
+    """Return up to 3 close matches using stdlib difflib (cutoff=0.5)."""
+    return difflib.get_close_matches(token, list(candidates), n=3, cutoff=0.5)
+
+
+def format_unknown_with_suggestion(
+    kind: str,
+    token: str,
+    candidates: Sequence[str],
+    *,
+    fallback_hint: str = "",
+) -> str:
+    """Format a usage error with optional difflib 'Did you mean' suggestions."""
+    matches = suggest_close_matches(token, candidates)
+    if matches:
+        return f"unknown {kind} '{token}'. Did you mean: {', '.join(matches)}?"
+    if fallback_hint:
+        return f"unknown {kind} '{token}'; {fallback_hint}"
+    return f"unknown {kind} '{token}'"
 
 
 class DeterministicArgumentParser(argparse.ArgumentParser):
@@ -39,10 +96,31 @@ class DeterministicArgumentParser(argparse.ArgumentParser):
         self._out_stream = out_stream
         self._err_stream = err_stream
 
+    def _print_message(self, message: str, file: Any = None) -> None:  # type: ignore[override]
+        if not message:
+            return
+        if file is None or file is sys.stdout:
+            target = sys.stdout if self._out_stream is None else self._out_stream
+        elif file is sys.stderr:
+            target = sys.stderr if self._err_stream is None else self._err_stream
+        else:
+            target = file
+        target.write(message)
+
     def error(self, message: str) -> None:  # type: ignore[override]
         err = sys.stderr if self._err_stream is None else self._err_stream
+        formatted = message
+        if self.prog == "cross-gpu":
+            match = _INVALID_COMMAND_RE.search(message)
+            if match and "list" in message and "info" in message and "run" in message:
+                formatted = format_unknown_with_suggestion(
+                    "command",
+                    match.group(1),
+                    _SUBCOMMANDS,
+                    fallback_hint="valid commands: list, info, run",
+                )
         self.print_usage(err)
-        err.write(f"{self.prog}: error: {message}\n")
+        err.write(f"{self.prog}: error: {formatted}\n")
         raise SystemExit(int(ExitCode.USAGE_ERROR))
 
     def exit(self, status: int = 0, message: str | None = None) -> None:  # type: ignore[override]
@@ -104,14 +182,46 @@ def parse_test_arg(value: str) -> tuple[list[str], bool]:
 
     selected: list[str] = []
     seen: set[str] = set()
+    unknown_hints: list[str] = []
+    valid_names = list_workload_names()
     for part in parts:
         if part not in WORKLOAD_REGISTRY:
-            valid = ", ".join(list_workload_names())
-            raise UsageError(f"Unknown test {part!r}; valid workloads: {valid}, or 'all'")
+            unknown_hints.append(
+                format_unknown_with_suggestion(
+                    "test",
+                    part,
+                    valid_names,
+                    fallback_hint=f"valid workloads: {', '.join(valid_names)}, or 'all'",
+                )
+            )
+            continue
         if part not in seen:
             seen.add(part)
             selected.append(part)
+    if unknown_hints:
+        raise UsageError("; ".join(unknown_hints))
     return selected, True
+
+
+def parse_backend_arg(value: str, *, extra_backends: Sequence[str] = ()) -> str:
+    """Validate --backend auto|PLUGIN_NAME, raising UsageError with typo hints."""
+    cleaned = value.strip()
+    if not cleaned:
+        raise UsageError("--backend cannot be empty")
+    valid: list[str] = ["auto", *KNOWN_BACKENDS]
+    for extra in extra_backends:
+        if extra not in valid:
+            valid.append(extra)
+    if cleaned not in valid:
+        raise UsageError(
+            format_unknown_with_suggestion(
+                "backend",
+                cleaned,
+                valid,
+                fallback_hint=f"valid backends: {', '.join(valid)}",
+            )
+        )
+    return cleaned
 
 
 def resolve_output_format(fmt: str | None, json_flag: bool) -> str:
@@ -134,6 +244,8 @@ def build_parser(
     parser = DeterministicArgumentParser(
         prog="cross-gpu",
         description="Cross-platform GPU stress-testing CLI.",
+        epilog=_ROOT_EXAMPLES_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
         out_stream=out_stream,
         err_stream=err_stream,
     )
@@ -151,11 +263,18 @@ def build_parser(
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    for cmd_name, help_text in (
-        ("list", "List detected GPU devices"),
-        ("info", "Show detailed information for detected GPUs"),
+    for cmd_name, help_text, cmd_epilog in (
+        ("list", "List detected GPU devices", _LIST_EXAMPLES_EPILOG),
+        ("info", "Show detailed information for detected GPUs", _INFO_EXAMPLES_EPILOG),
     ):
-        sub = subparsers.add_parser(cmd_name, help=help_text)
+        sub = subparsers.add_parser(
+            cmd_name,
+            help=help_text,
+            epilog=cmd_epilog,
+            formatter_class=argparse.RawDescriptionHelpFormatter,
+            out_stream=out_stream,
+            err_stream=err_stream,
+        )
         sub.add_argument(
             "--format",
             choices=("text", "json"),
@@ -175,7 +294,14 @@ def build_parser(
             help="Write detailed probe, deduplication, and compiler diagnostics to stderr",
         )
 
-    run_p = subparsers.add_parser("run", help="Run GPU stress workloads")
+    run_p = subparsers.add_parser(
+        "run",
+        help="Run GPU stress workloads",
+        epilog=_RUN_EXAMPLES_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        out_stream=out_stream,
+        err_stream=err_stream,
+    )
     run_p.add_argument(
         "--device",
         default="all",
@@ -302,6 +428,37 @@ def format_info_text(devices: Sequence[GPUDevice]) -> str:
     return "\n\n".join(sections) + "\n"
 
 
+def _format_duration_span(elapsed_s: float, total_s: float) -> str:
+    safe_total = max(0.0, float(total_s))
+    safe_elapsed = max(0.0, float(elapsed_s))
+    if safe_total > 0.0:
+        safe_elapsed = min(safe_elapsed, safe_total)
+    if safe_total >= 1.0 and abs(safe_total - round(safe_total)) < 1e-6:
+        return f"{int(round(safe_elapsed))}s/{int(round(safe_total))}s"
+    if safe_total == 0.0:
+        return f"{int(round(safe_elapsed))}s/0s"
+    return f"{safe_elapsed:.1f}s/{safe_total:.1f}s"
+
+
+def format_progress_prefix(
+    workload: str,
+    *,
+    workload_index: int,
+    workload_total: int,
+    phase: str = "run",
+    phase_elapsed_s: float = 0.0,
+    phase_duration_s: float = 0.0,
+) -> str:
+    """Format zero-padded workload progress prefix, e.g. [04/20 compute-fp32 | 18s/60s]."""
+    safe_total = max(1, int(workload_total))
+    safe_idx = max(1, int(workload_index))
+    width = max(2, len(str(safe_total)))
+    span = _format_duration_span(phase_elapsed_s, phase_duration_s)
+    if phase == "warmup":
+        return f"[{safe_idx:0{width}d}/{safe_total:0{width}d} {workload} | warmup {span}]"
+    return f"[{safe_idx:0{width}d}/{safe_total:0{width}d} {workload} | {span}]"
+
+
 def format_telemetry_line(event: dict[str, Any]) -> str:
     """Format a 1 Hz telemetry event as a compact single line with all 8 fields & units."""
     m = event.get("metrics", {})
@@ -313,6 +470,24 @@ def format_telemetry_line(event: dict[str, Any]) -> str:
     mclk = f"{m['mem_clock_mhz']}MHz" if m.get("mem_clock_mhz") is not None else "N/A MHz"
     fan_p = f"{m['fan_speed_pct']:.0f}%" if m.get("fan_speed_pct") is not None else "N/A %"
     fan_r = f"{m['fan_speed_rpm']}RPM" if m.get("fan_speed_rpm") is not None else "N/A RPM"
+
+    wl_idx = event.get("workload_index")
+    wl_total = event.get("workload_total")
+    if wl_idx is not None and wl_total is not None:
+        prefix = format_progress_prefix(
+            str(event.get("workload", "")),
+            workload_index=int(wl_idx),
+            workload_total=int(wl_total),
+            phase=str(event.get("phase", "run")),
+            phase_elapsed_s=float(event.get("phase_elapsed_s", event.get("elapsed_s", 0.0))),
+            phase_duration_s=float(event.get("phase_duration_s", 0.0)),
+        )
+        return (
+            f"{prefix} dev={event.get('device')} | "
+            f"Temp={temp} Power={pwr} GPU={gpu} Mem={mem} "
+            f"CoreClk={cclk} MemClk={mclk} Fan={fan_p}/{fan_r}"
+        )
+
     return (
         f"[{event.get('elapsed_s', 0.0):6.1f}s] dev={event.get('device')} "
         f"phase={event.get('phase')} workload={event.get('workload')} | "
@@ -321,13 +496,44 @@ def format_telemetry_line(event: dict[str, Any]) -> str:
     )
 
 
+def format_workload_status_line(event: dict[str, Any]) -> str:
+    """Format a compact progress-prefixed workload completion status line for text mode."""
+    wl_idx = int(event.get("workload_index", 1))
+    wl_total = int(event.get("workload_total", 1))
+    target_dur = float(event.get("target_duration_s", event.get("duration_s", 0.0)))
+    elapsed = float(event.get("duration_s", 0.0))
+    prefix = format_progress_prefix(
+        str(event.get("workload", "")),
+        workload_index=wl_idx,
+        workload_total=wl_total,
+        phase="run",
+        phase_elapsed_s=elapsed,
+        phase_duration_s=target_dur,
+    )
+    status = str(event.get("status", ""))
+    dev = event.get("device")
+    if status == "pass":
+        rate = event.get("rate")
+        rate_unit = event.get("rate_unit", "")
+        rate_part = f" rate={rate:.2f} {rate_unit}" if rate is not None else ""
+        return f"{prefix} dev={dev} status=pass{rate_part}"
+    detail = str(event.get("reason") or event.get("message") or "").strip()
+    suffix = f" ({detail})" if detail else ""
+    return f"{prefix} dev={dev} status={status}{suffix}"
+
+
 def format_run_summary_text(results: Sequence[WorkloadResult], exit_code: ExitCode) -> str:
-    """Format final workload results as an aligned summary table."""
+    """Format final workload results as an aligned summary table with tally."""
     if not results:
-        return f"No workloads executed (exit_code={int(exit_code)} {exit_code.name}).\n"
+        return (
+            "Tally: passed=0 failed=0 unsupported=0 hardware_error=0 | "
+            f"Exit Code: {int(exit_code)} ({exit_code.name})\n"
+        )
 
     include_reason = any(
-        res.status == "unsupported" or bool(res.reason) or res.status in ("fail", "init_error", "hardware_error", "not_implemented")
+        res.status == "unsupported"
+        or bool(res.reason)
+        or res.status in ("fail", "init_error", "hardware_error", "not_implemented")
         for res in results
     )
     headers: tuple[str, ...] = (
@@ -370,7 +576,19 @@ def format_run_summary_text(results: Sequence[WorkloadResult], exit_code: ExitCo
     ]
     for row in rows:
         lines.append("  ".join(row[col].ljust(widths[col]) for col in range(len(headers))))
-    lines.append(f"Overall Exit Code: {int(exit_code)} ({exit_code.name})")
+
+    passed = sum(1 for r in results if r.status == "pass")
+    failed = sum(1 for r in results if r.status == "fail")
+    unsupported = sum(1 for r in results if r.status == "unsupported")
+    hardware_error = sum(1 for r in results if r.status == "hardware_error")
+    init_error = sum(1 for r in results if r.status in ("init_error", "not_implemented"))
+    tally = (
+        f"Tally: passed={passed} failed={failed} unsupported={unsupported} "
+        f"hardware_error={hardware_error}"
+    )
+    if init_error:
+        tally += f" init_error={init_error}"
+    lines.append(f"{tally} | Exit Code: {int(exit_code)} ({exit_code.name})")
     return "\n".join(lines) + "\n"
 
 
@@ -498,13 +716,21 @@ def main(
             tests, explicit_test_selection = parse_test_arg(args.test)
             duration_s = parse_duration(args.duration, allow_zero=False)
             warmup_s = parse_duration(args.warmup, allow_zero=True)
-            backend_pref = args.backend.strip()
-            if not backend_pref:
-                raise UsageError("--backend cannot be empty")
+            is_default_discover = discover_fn is None or discover_fn is _default_discover_fn
+            if is_default_discover:
+                backend_pref = parse_backend_arg(args.backend)
+            else:
+                backend_pref = args.backend.strip()
+                if not backend_pref:
+                    raise UsageError("--backend cannot be empty")
 
             devices, plugins, backend_diagnostics = _discover_with_diagnostics(
                 discover_fn, diag_fn=diag_fn
             )
+            if not is_default_discover:
+                backend_pref = parse_backend_arg(
+                    args.backend, extra_backends=tuple(plugins.keys())
+                )
 
             def emit_event(event: dict[str, Any]) -> None:
                 etype = event.get("type")
@@ -531,6 +757,9 @@ def main(
                     return
                 if etype == "telemetry":
                     out.write(format_telemetry_line(event) + "\n")
+                    out.flush()
+                elif etype == "workload_result":
+                    out.write(format_workload_status_line(event) + "\n")
                     out.flush()
                 elif etype == "run_start":
                     devs_desc = ", ".join(
