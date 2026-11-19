@@ -60,4 +60,4 @@ Full documentation lives under [`docs/`](docs/README.md):
 
 ## License
 
-MIT License. See [LICENSE](LICENSE).
+MIT License. Copyright (c) 2026 CrossGPU Contributors. See [LICENSE](LICENSE).
