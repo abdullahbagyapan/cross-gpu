@@ -32,11 +32,12 @@ from cross_gpu.exit_codes import (
 from cross_gpu.models import DeviceCapabilities
 from cross_gpu.workloads import WORKLOAD_SPECS_BY_NAME, device_supports_workload
 
-NVRTC_LIB_CANDIDATES: tuple[str, ...] = ("libnvrtc.so", "libnvrtc.so.12", "libnvrtc.so.11.2")
+NVRTC_LIB_CANDIDATES: tuple[str, ...] = ("libnvrtc.so.12", "libnvrtc.so", "libnvrtc.so.11.2")
 HIPRTC_LIB_CANDIDATES: tuple[str, ...] = (
-    "libhiprtc.so",
     "libhiprtc.so.6",
+    "libhiprtc.so",
     "libhiprtc.so.5",
+    "libamdhip64.so.6",
     "libamdhip64.so",
 )
 
@@ -392,29 +393,36 @@ def _safe_home_dir(home: Path | None = None) -> Path | None:
         return None
 
 
+_TRUTHY_ENV_VALUES: frozenset[str] = frozenset({"1", "true", "yes"})
+
+
+def is_disk_cache_disabled(env: Mapping[str, str] | None = None) -> bool:
+    """Return True when CROSS_GPU_NO_CACHE is set to a truthy value (1, true, yes)."""
+    active_env = os.environ if env is None else env
+    return active_env.get("CROSS_GPU_NO_CACHE", "").strip().lower() in _TRUTHY_ENV_VALUES
+
+
 def default_cache_dir(
     *,
     platform_name: str | None = None,
     env: Mapping[str, str] | None = None,
     home: Path | None = None,
 ) -> Path | None:
-    """Resolve the OS-standard runtime binary cache directory, or None if unavailable.
+    """Resolve the OS-standard runtime binary cache directory, or None if unavailable/disabled.
 
+    - Disk cache disabled: CROSS_GPU_NO_CACHE=1|true|yes -> None (in-memory only)
     - Explicit override: $CROSS_GPU_CACHE_DIR
-    - macOS: ~/Library/Caches/cross-gpu
-    - Linux/POSIX: $XDG_CACHE_HOME/cross-gpu (if absolute), fallback ~/.cache/cross-gpu
+    - Explicit XDG override (Linux & macOS): $XDG_CACHE_HOME/cross-gpu (if absolute)
+    - macOS default: ~/Library/Caches/cross-gpu
+    - Linux/POSIX default: ~/.cache/cross-gpu
     """
     active_env = os.environ if env is None else env
+    if is_disk_cache_disabled(active_env):
+        return None
+
     explicit = active_env.get("CROSS_GPU_CACHE_DIR", "").strip()
     if explicit:
         return Path(explicit)
-
-    active_platform = sys.platform if platform_name is None else platform_name
-    if active_platform == "darwin":
-        resolved_home = _safe_home_dir(home)
-        if resolved_home is None:
-            return None
-        return resolved_home / "Library" / "Caches" / "cross-gpu"
 
     xdg_cache = active_env.get("XDG_CACHE_HOME", "").strip()
     if xdg_cache:
@@ -425,6 +433,10 @@ def default_cache_dir(
     resolved_home = _safe_home_dir(home)
     if resolved_home is None:
         return None
+
+    active_platform = sys.platform if platform_name is None else platform_name
+    if active_platform == "darwin":
+        return resolved_home / "Library" / "Caches" / "cross-gpu"
     return resolved_home / ".cache" / "cross-gpu"
 
 
@@ -433,9 +445,16 @@ class RuntimeBinaryCache:
 
     def __init__(self, cache_dir: Path | None = None) -> None:
         self._memory: dict[MemoryCacheKey, CompiledKernelBinary] = {}
-        self.cache_dir: Path | None = (
-            cache_dir if cache_dir is not None else default_cache_dir()
-        )
+        self._explicit_cache_dir: Path | None = cache_dir
+
+    @property
+    def cache_dir(self) -> Path | None:
+        """Resolved disk cache directory, or None when disabled/unavailable."""
+        if is_disk_cache_disabled():
+            return None
+        if self._explicit_cache_dir is not None:
+            return self._explicit_cache_dir
+        return default_cache_dir()
 
     def clear_memory(self) -> None:
         """Clear in-memory compiled-kernel cache."""
@@ -451,10 +470,11 @@ class RuntimeBinaryCache:
         """Look up compiled binary and return (entry, 'memory'|'disk'|None)."""
         if memory_key in self._memory:
             return self._memory[memory_key], "memory"
-        if disk_name is None or self.cache_dir is None:
+        active_dir = self.cache_dir
+        if disk_name is None or active_dir is None:
             return None, None
-        meta_path = self.cache_dir / f"{disk_name}.json"
-        bin_path = self.cache_dir / f"{disk_name}.bin"
+        meta_path = active_dir / f"{disk_name}.json"
+        bin_path = active_dir / f"{disk_name}.bin"
         try:
             if not (meta_path.is_file() and bin_path.is_file()):
                 return None, None
@@ -504,10 +524,11 @@ class RuntimeBinaryCache:
         meta_extra: Mapping[str, Any] | None = None,
     ) -> None:
         self._memory[memory_key] = compiled
-        if disk_name is None or self.cache_dir is None:
+        active_dir = self.cache_dir
+        if disk_name is None or active_dir is None:
             return
         try:
-            self.cache_dir.mkdir(parents=True, exist_ok=True)
+            active_dir.mkdir(parents=True, exist_ok=True)
             meta: dict[str, Any] = {
                 "backend": compiled.backend,
                 "workload": compiled.workload,
@@ -519,8 +540,8 @@ class RuntimeBinaryCache:
             }
             if meta_extra:
                 meta.update(meta_extra)
-            (self.cache_dir / f"{disk_name}.bin").write_bytes(compiled.binary_bytes)
-            (self.cache_dir / f"{disk_name}.json").write_text(
+            (active_dir / f"{disk_name}.bin").write_bytes(compiled.binary_bytes)
+            (active_dir / f"{disk_name}.json").write_text(
                 json.dumps(meta, sort_keys=True),
                 encoding="utf-8",
             )
@@ -1152,7 +1173,13 @@ def compile_kernel_runtime(
         return cached
 
     if diag_fn is not None:
-        cache_loc = str(active_cache.cache_dir) if (disk_name and active_cache.cache_dir) else "in-memory only"
+        active_dir = active_cache.cache_dir
+        if is_disk_cache_disabled():
+            cache_loc = "disabled via CROSS_GPU_NO_CACHE (in-memory only)"
+        elif disk_name and active_dir is not None:
+            cache_loc = str(active_dir)
+        else:
+            cache_loc = "in-memory only"
         diag_fn(f"cache miss [{backend}:{normalized_workload}] (cache={cache_loc})")
 
     try:
