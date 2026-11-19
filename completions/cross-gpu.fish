@@ -4,8 +4,8 @@
 set -l __cross_gpu_subcommands list info run
 set -l __cross_gpu_backends auto cuda hip levelzero metal opencl
 set -l __cross_gpu_devices all 0 1 2 3
-set -l __cross_gpu_durations 10s 30s 60s 5m 10m 1h
-set -l __cross_gpu_warmups 5s 10s 30s
+set -l __cross_gpu_durations 250ms 500ms 10s 30s 60s 5m 10m 1h
+set -l __cross_gpu_warmups 250ms 500ms 5s 10s 30s
 set -l __cross_gpu_tests \
     all \
     compute-int64 \

@@ -15,8 +15,8 @@ _cross_gpu_completions() {
     local run_flags="--device --test --duration --warmup --backend --format --json -v --verbose --help"
     local formats="text json"
     local devices="all 0 1 2 3"
-    local durations="10s 30s 60s 5m 10m 1h"
-    local warmups="5s 10s 30s"
+    local durations="250ms 500ms 10s 30s 60s 5m 10m 1h"
+    local warmups="250ms 500ms 5s 10s 30s"
     local backends="auto cuda hip levelzero metal opencl"
     local tests="all compute-int64 compute-int32 compute-int16 compute-int8 compute-int4 compute-fp64 compute-fp32 compute-fp16 compute-fp8 compute-fp4 compute-bf16 compute-tensor-fp32 compute-tensor-fp16 compute-tensor-bf16 compute-tensor-int8 memory-pattern memory-sweep bandwidth-d2d bandwidth-h2d bandwidth-d2h"
 

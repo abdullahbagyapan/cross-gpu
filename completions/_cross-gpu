@@ -65,8 +65,8 @@ _cross_gpu() {
                         '(-h --help)'{-h,--help}'[Show help message and exit]' \
                         '--device[Target device index or all]:device:(all 0 1 2 3)' \
                         "--test[Workload name, comma-separated list, or all]:test:_values -s , 'workload' ${workloads[*]}" \
-                        '--duration[Timed execution duration per workload]:duration:(10s 30s 60s 5m 10m 1h)' \
-                        '--warmup[Optional warmup duration before each workload]::warmup:(5s 10s 30s)' \
+                        '--duration[Timed execution duration per workload]:duration:(250ms 500ms 10s 30s 60s 5m 10m 1h)' \
+                        '--warmup[Optional warmup duration before each workload]::warmup:(250ms 500ms 5s 10s 30s)' \
                         "--backend[Target backend plugin]:backend:(${backends[*]})" \
                         '--format[Output format]:format:(text json)' \
                         '--json[Shortcut for --format json]' \
