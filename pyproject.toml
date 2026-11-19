@@ -31,8 +31,19 @@ classifiers = [
 [project.scripts]
 cross-gpu = "cross_gpu.cli:main"
 
+[tool.setuptools]
+include-package-data = true
+
 [tool.setuptools.dynamic]
 version = { attr = "cross_gpu.__version__" }
 
 [tool.setuptools.packages.find]
 include = ["cross_gpu*"]
+
+[tool.setuptools.package-data]
+cross_gpu = [
+    "kernels/*/*.cu",
+    "kernels/*/*.hip",
+    "kernels/*/*.cl",
+    "kernels/*/*.metal",
+]

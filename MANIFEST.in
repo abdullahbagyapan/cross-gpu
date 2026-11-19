@@ -3,5 +3,6 @@ include README.md
 include Makefile
 include cross-gpu
 include docs/cross-gpu.1
-recursive-include cross_gpu/kernels README.md .gitkeep
+include docs/*.md
+recursive-include cross_gpu/kernels *.cu *.hip *.cl *.metal README.md
 recursive-include tests *.py
