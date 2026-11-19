@@ -1,8 +1,4 @@
-"""Canonical 20-workload metadata registry and pluggable executor hooks.
-
-This module deliberately contains only workload specifications, SI unit
-definitions, and abstract execution hooks—no workload math or GPU kernels.
-"""
+"""Canonical 20-workload metadata registry and WorkloadExecutor interface."""
 
 from __future__ import annotations
 
@@ -61,7 +57,7 @@ class WorkloadExecutionContext:
 
 
 class WorkloadExecutor(ABC):
-    """Abstract extension hook implemented by concrete workload plugins."""
+    """Abstract base class implemented by all 20 concrete workload executors."""
 
     requires_kernel: bool = True
 
@@ -72,26 +68,30 @@ class WorkloadExecutor(ABC):
         """Return True if the device supports the workload's required capability."""
         return device_supports_workload(device, self.spec)
 
+    def reset_run_state(self, ctx: WorkloadExecutionContext) -> None:
+        """Reset transient per-phase counters between warmup and timed execution."""
+        del ctx
+
     @abstractmethod
     def prepare(self, ctx: WorkloadExecutionContext, binary: Any) -> None:
-        """Allocate device/host buffers and load compiled modules before warmup."""
+        """Allocate device/host buffers, load modules, and calibrate dispatch size."""
 
     @abstractmethod
     def run_step(self, ctx: WorkloadExecutionContext) -> StepMetrics:
-        """Execute one kernel/transfer step and return raw ops/bytes and errors."""
+        """Execute one calibrated kernel/transfer batch and return raw ops/bytes."""
 
     @abstractmethod
     def verify(self, ctx: WorkloadExecutionContext) -> VerificationResult:
-        """Validate numerical/bitwise results after the timed execution loop."""
+        """Validate numerical or bitwise integrity against golden references."""
 
     @abstractmethod
     def cleanup(self, ctx: WorkloadExecutionContext) -> None:
-        """Release workload buffers, modules, and scratch state."""
+        """Idempotently release all device buffers, host buffers, and modules."""
 
 
 @dataclass
 class WorkloadEntry:
-    """Pairs a WorkloadSpec with an optional plugged-in WorkloadExecutor class."""
+    """Pairs a WorkloadSpec with its registered WorkloadExecutor class."""
 
     spec: WorkloadSpec
     executor_cls: type[WorkloadExecutor] | None = None
@@ -244,7 +244,7 @@ WORKLOAD_SPECS: tuple[WorkloadSpec, ...] = (
         rate_unit="GB/s",
         total_unit="GB",
         required_capability=None,
-        requires_kernel=False,
+        requires_kernel=True,
         description="Device-to-device memory copy bandwidth stress",
     ),
     WorkloadSpec(
