@@ -1,46 +1,60 @@
 # cross-gpu
 
-Cross-platform GPU stress-testing CLI targeting Linux and macOS, built exclusively with the **Python 3.10+ standard library** and **zero external runtime dependencies**.
+Cross-platform GPU discovery, hardware telemetry, and stress-testing CLI targeting **Linux** (`x86_64`, `aarch64`) and **macOS** (`arm64`, `x86_64`), built exclusively with the **Python 3.10+ standard library** and **zero external runtime dependencies**.
 
-## Features
+## Highlights
 
 - **5 native `ctypes` backends:** CUDA (`libcuda.so.1`), HIP (`libamdhip64.so.6`), oneAPI Level Zero (`libze_loader.so.1`), Apple Metal (`libobjc.A.dylib` + `Metal.framework`), and OpenCL (`libOpenCL.so.1` / `OpenCL.framework`).
-- **Deterministic deduplication & priority:** Native backends (`priority=100`) take precedence over OpenCL (`priority=50`) with physical GPU deduplication by PCIe BDF, hardware UUID / macOS `registryID`, and fallback fingerprint.
-- **1 Hz hardware telemetry:** Drift-compensated background sampling via NVML (`libnvidia-ml.so.1`), Linux DRM/hwmon `sysfs`, and unprivileged macOS `ioreg`, with automatic sensor sanitization that omits unusable/unavailable fields from both `text` and JSON/NDJSON outputs and suppresses empty ticks.
-- **Packaged raw kernels & runtime compiler cache:** Raw kernel source files under `cross_gpu/kernels/` are bundled as package data, loaded directly via `importlib.resources`, verified with `python3 -m cross_gpu.embed_binary verify`, and cached using plain tuple keys in memory and metadata-validated files under OS-standard cache directories (`$XDG_CACHE_HOME/cross-gpu` / `~/.cache/cross-gpu` on Linux, `~/Library/Caches/cross-gpu` on macOS, or in-memory only with `CROSS_GPU_NO_CACHE=1`).
-- **Operator-friendly CLI:** Sub-second (`ms`) through multi-hour (`s`/`m`/`h`) timing, strict `stdout`/`stderr` separation (valid JSON/NDJSON on `stdout` even with `-v`/`--verbose`), actionable backend-discovery & skip reasons, `difflib` typo hints, `text`-mode workload progress/tallies, and Bash/Zsh/Fish shell completions.
-- **Deterministic exit codes:** `0` (`SUCCESS`), `1` (`USAGE_ERROR`), `2` (`INIT_ERROR`), `3` (`COMPUTE_ERROR`), `4` (`HARDWARE_ERROR`).
+- **Priority & physical deduplication:** Native backends (`100`) take precedence over OpenCL (`50`) using normalized PCIe BDF, hardware UUID / macOS `registryID`, and fallback fingerprints.
+- **90 native kernels & 20 verified workloads:** Raw kernels under `cross_gpu/kernels/` loaded via `importlib.resources` (zero fake emulation), host-side golden verification, fixed SI unit rates (`GOP/s`, `GFLOP/s`, `GB/s`), and safe VRAM sizing.
+- **Clean 1 Hz telemetry & stream hygiene:** NVML, Linux DRM/hwmon `sysfs`, and unprivileged macOS `ioreg` with sensor sanitization (omitting unusable fields and empty ticks), strict `stdout`/`stderr` separation, `-v`/`--verbose`, `difflib` typo hints, and `ms`/`s`/`m`/`h` durations.
 
-## Usage
-
-```sh
-cross-gpu list [--format text|json] [--json] [-v|--verbose]
-cross-gpu info [--format text|json] [--json] [-v|--verbose]
-cross-gpu run [--device all|N] [--test TEST|all] \
-              [--duration TIME] [--warmup [TIME]] [--backend auto|PLUGIN_NAME] \
-              [--format text|json] [--json] [-v|--verbose]
-```
-
-## Offline & Distro Installation
+## Installation
 
 ```sh
 # Offline PEP 517 build/install (Debian, Fedora, Arch, Nix, Homebrew)
 pip install --no-build-isolation --no-deps .
 
-# Or using the Makefile with PREFIX and DESTDIR (installs man page + bash/zsh/fish completions)
+# Stage with Makefile (installs CLI, cross-gpu(1) man page, and bash/zsh/fish completions)
 make check
 make install PREFIX=/usr DESTDIR=/tmp/stage
 ```
 
+## Quickstart
+
+```sh
+cross-gpu list
+cross-gpu info --json
+cross-gpu run --device 0 --test compute-fp32,memory-pattern --warmup 5s --duration 30s
+cross-gpu run --device 0 --test compute-fp32 --warmup 250ms --duration 500ms --json -v
+```
+
+## Exit Codes
+
+Exit codes are severity-ordered and aggregated across GPUs and workloads via `max(codes)`:
+
+| Code | Name | Meaning |
+|---|---|---|
+| `0` | `SUCCESS` | All executed workloads passed without compute or hardware faults |
+| `1` | `USAGE_ERROR` | Invalid CLI arguments, unknown commands/tests/backends, malformed durations, or conflicting flags |
+| `2` | `INIT_ERROR` | No compatible GPU/backend found, requested target unavailable, context/kernel init or compile error |
+| `3` | `COMPUTE_ERROR` | Golden verification mismatch, silent data corruption (SDC), `NaN`/`Inf`, or memory fault |
+| `4` | `HARDWARE_ERROR` | Device-lost error, GPU hang/timeout/reset, uncorrectable ECC, or fatal hardware fault |
+
 ## Documentation
 
-- [CLI Reference](docs/cli.md) — flags, `ms`/`s`/`m`/`h` timing, `--verbose` stream hygiene, `difflib` typo hints, environment variables (`XDG_CACHE_HOME`, `CROSS_GPU_NO_CACHE`), and shell completions
-- [Telemetry](docs/telemetry.md) — platform sensor readers, sanitization bounds, and clean `text`/NDJSON filtering
-- [Architecture](docs/architecture.md) — framework modules, native backends, `importlib.resources` kernel loading, and runtime compile caching
-- [Workloads](docs/workloads.md) — all 20 stress workloads, fixed SI unit rates, VRAM guardrails, and golden verification
-- [Packaging](docs/packaging.md) — offline distro builds, `sdist` verification, FHS install paths, and read-only safety
-- [Contributing](docs/contributing.md) — developer workflow, editing raw kernels, and testing
-- [Changelog](CHANGELOG.md) — release history and notable changes
+Full documentation lives under [`docs/`](docs/README.md):
+
+- [Documentation Index](docs/README.md) — overview and quick navigation
+- [CLI Reference](docs/cli.md) — commands, flags, `ms`/`s`/`m`/`h` timing, JSON/NDJSON schemas, exit codes, and recipes
+- [Architecture](docs/architecture.md) — system diagram, `ctypes` ABI layer, deduplication, `importlib.resources` kernel loader, caching, and signal cleanup
+- [Backends & Capability Matrix](docs/backends.md) — CUDA, HIP, Level Zero, Metal, and OpenCL runtimes, error mapping, and 5×20 support table
+- [Workloads & Verification](docs/workloads.md) — all 20 workloads, SI unit accounting, verification rules, calibration, and VRAM guardrails
+- [Telemetry](docs/telemetry.md) — 1 Hz sampler, 8 sensor metrics, OS readers, sanitization, and non-root notes
+- [Packaging & Distribution](docs/packaging.md) — offline distro builds, FHS install paths, `sdist` verification, and environment overrides
+- [Contributing](docs/contributing.md) — kernel authoring, `embed_binary verify`/`list`, coding standards, and Conventional Commits
+- [Manual Page (`cross-gpu.1`)](docs/cross-gpu.1) — Unix `man(1)` page
+- [Changelog](CHANGELOG.md) — release history
 
 ## License
 
