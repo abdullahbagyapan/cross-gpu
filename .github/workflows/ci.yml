@@ -69,6 +69,10 @@ jobs:
                   "CHANGELOG.md",
                   "Makefile",
                   "pyproject.toml",
+                  "cross-gpu",
+                  "src/__init__.py",
+                  "src/cli.py",
+                  "src/embed_binary.py",
                   "completions/cross-gpu.bash",
                   "completions/_cross-gpu",
                   "completions/cross-gpu.fish",
@@ -88,7 +92,9 @@ jobs:
 
               forbidden = [
                   p for p in rel_paths
-                  if "__pycache__" in p or p.endswith((".pyc", ".pyo")) or p.startswith((".git/", "dist/", "build/"))
+                  if "__pycache__" in p
+                  or p.endswith((".pyc", ".pyo", ".spv", ".cubin", ".ptx", ".hsaco", ".metallib", ".so", ".dylib"))
+                  or p.startswith((".git/", "dist/", "build/"))
               ]
               assert not forbidden, f"Forbidden artifacts in sdist: {forbidden}"
 
