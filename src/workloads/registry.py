@@ -7,7 +7,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
 
-from cross_gpu.models import (
+from ..models import (
     BackendBinding,
     BackendDeviceInfo,
     DeviceCapabilities,

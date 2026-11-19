@@ -6,7 +6,7 @@ from __future__ import annotations
 import ctypes
 from typing import Any, Sequence
 
-from cross_gpu.backends.base import (
+from .base import (
     NATIVE_BACKEND_PRIORITY,
     BackendContext,
     BackendHardwareError,
@@ -24,8 +24,8 @@ from cross_gpu.backends.base import (
     load_shared_library,
     resolve_host_pointer,
 )
-from cross_gpu.exit_codes import KernelCompilationError
-from cross_gpu.models import BackendDeviceInfo, DeviceCapabilities
+from ..exit_codes import KernelCompilationError
+from ..models import BackendDeviceInfo, DeviceCapabilities
 
 LEVELZERO_LIB_CANDIDATES: tuple[str, ...] = ("libze_loader.so.1", "libze_loader.so")
 

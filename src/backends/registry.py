@@ -6,17 +6,17 @@ from __future__ import annotations
 import importlib
 from typing import Iterable
 
-from cross_gpu.backends.base import BackendPlugin, DiagCallback
-from cross_gpu.models import BackendDeviceInfo
+from .base import BackendPlugin, DiagCallback
+from ..models import BackendDeviceInfo
 
 KNOWN_BACKENDS: tuple[str, ...] = ("cuda", "hip", "levelzero", "metal", "opencl")
 
 BUILTIN_PLUGIN_SPECS: tuple[tuple[str, str], ...] = (
-    ("cross_gpu.backends.cuda_backend", "CudaBackend"),
-    ("cross_gpu.backends.hip_backend", "HipBackend"),
-    ("cross_gpu.backends.levelzero_backend", "LevelZeroBackend"),
-    ("cross_gpu.backends.metal_backend", "MetalBackend"),
-    ("cross_gpu.backends.opencl_backend", "OpenCLBackend"),
+    (".cuda_backend", "CudaBackend"),
+    (".hip_backend", "HipBackend"),
+    (".levelzero_backend", "LevelZeroBackend"),
+    (".metal_backend", "MetalBackend"),
+    (".opencl_backend", "OpenCLBackend"),
 )
 
 
@@ -29,7 +29,11 @@ def discover_backends(
     plugins: list[BackendPlugin] = []
     for module_name, class_name in plugin_specs:
         try:
-            module = importlib.import_module(module_name)
+            if module_name.startswith("."):
+                pkg = __package__ or f"{(__package__ or 'src').split('.')[0]}.backends"
+                module = importlib.import_module(module_name, package=pkg)
+            else:
+                module = importlib.import_module(module_name)
             plugin_cls = getattr(module, class_name)
             plugin: BackendPlugin = plugin_cls()
         except Exception:

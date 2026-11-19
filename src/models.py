@@ -6,7 +6,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
-from cross_gpu.exit_codes import ExitCode
+from .exit_codes import ExitCode
 
 
 @dataclass

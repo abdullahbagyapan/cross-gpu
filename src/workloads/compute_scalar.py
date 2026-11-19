@@ -7,9 +7,9 @@ import ctypes
 import struct
 from typing import Any, Sequence
 
-from cross_gpu.exit_codes import BackendInitError
-from cross_gpu.models import StepMetrics, VerificationResult
-from cross_gpu.workloads.common import (
+from ..exit_codes import BackendInitError
+from ..models import StepMetrics, VerificationResult
+from .common import (
     BF16_ABS_TOL,
     BF16_REL_TOL,
     DEFAULT_MAX_ITERATIONS,
@@ -51,7 +51,7 @@ from cross_gpu.workloads.common import (
     verify_float_values,
     verify_int_values,
 )
-from cross_gpu.workloads.registry import WorkloadExecutionContext, WorkloadExecutor
+from .registry import WorkloadExecutionContext, WorkloadExecutor
 
 # Dyadic seed pairs exact in FP64, FP32, FP16, and BF16 so analytical values stay drift-free.
 _FP_SEED_PAIRS: tuple[tuple[float, float], ...] = (

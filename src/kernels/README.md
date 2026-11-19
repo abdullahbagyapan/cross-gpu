@@ -13,6 +13,6 @@ Self-contained kernel source files for all 5 backends (`18` compilation units pe
 These raw kernel files are the single source of truth, packaged directly as package data and loaded at runtime via `importlib.resources`. Edits take effect immediately—verify registry and entry-point integrity with:
 
 ```sh
-python3 -m cross_gpu.embed_binary verify
-python3 -m cross_gpu.embed_binary list
+python3 -m src.embed_binary verify
+python3 -m src.embed_binary list
 ```

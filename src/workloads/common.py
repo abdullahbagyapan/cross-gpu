@@ -12,9 +12,9 @@ import time
 from typing import Any, Callable, Sequence
 import zlib
 
-from cross_gpu.backends.base import DeviceBuffer, HostBuffer
-from cross_gpu.exit_codes import BackendInitError
-from cross_gpu.models import BackendDeviceInfo, VerificationResult
+from ..backends.base import DeviceBuffer, HostBuffer
+from ..exit_codes import BackendInitError
+from ..models import BackendDeviceInfo, VerificationResult
 
 # Watchdog-safe dispatch window (Linux DRM hangcheck & macOS Metal timeout safety).
 WATCHDOG_MIN_DISPATCH_S = 0.050

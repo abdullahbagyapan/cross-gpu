@@ -10,7 +10,7 @@ import subprocess
 import sys
 from typing import Any, Sequence
 
-from cross_gpu.backends.base import (
+from .base import (
     NATIVE_BACKEND_PRIORITY,
     BackendContext,
     BackendHardwareError,
@@ -24,8 +24,8 @@ from cross_gpu.backends.base import (
     coerce_kernel_arg,
     resolve_host_pointer,
 )
-from cross_gpu.exit_codes import KernelCompilationError
-from cross_gpu.models import BackendDeviceInfo, DeviceCapabilities
+from ..exit_codes import KernelCompilationError
+from ..models import BackendDeviceInfo, DeviceCapabilities
 
 LIBOBJC_PATH = "/usr/lib/libobjc.A.dylib"
 LIBSYSTEM_PATH = "/usr/lib/libSystem.B.dylib"

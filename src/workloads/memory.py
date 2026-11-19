@@ -7,10 +7,10 @@ import ctypes
 import struct
 from typing import Any
 
-from cross_gpu.backends.base import DeviceBuffer
-from cross_gpu.exit_codes import BackendInitError
-from cross_gpu.models import StepMetrics, VerificationResult
-from cross_gpu.workloads.common import (
+from ..backends.base import DeviceBuffer
+from ..exit_codes import BackendInitError
+from ..models import StepMetrics, VerificationResult
+from .common import (
     MIB,
     MIN_BANDWIDTH_BYTES,
     MIN_STRESS_VRAM_BYTES,
@@ -30,7 +30,7 @@ from cross_gpu.workloads.common import (
     golden_splitmix64,
     write_host_buffer,
 )
-from cross_gpu.workloads.registry import WorkloadExecutionContext, WorkloadExecutor
+from .registry import WorkloadExecutionContext, WorkloadExecutor
 
 MEMORY_PATTERN_WRITE_EP = "kernel_memory_pattern_write"
 MEMORY_PATTERN_VERIFY_EP = "kernel_memory_pattern_verify"

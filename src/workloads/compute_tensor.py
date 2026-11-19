@@ -6,8 +6,8 @@ from __future__ import annotations
 import ctypes
 from typing import Sequence
 
-from cross_gpu.models import VerificationResult
-from cross_gpu.workloads.common import (
+from ..models import VerificationResult
+from .common import (
     FULL_VERIFY_BUFFER_LIMIT_BYTES,
     TENSOR_FP_ABS_TOL,
     TENSOR_FP_REL_TOL,
@@ -17,8 +17,8 @@ from cross_gpu.workloads.common import (
     verify_float_values,
     verify_int_values,
 )
-from cross_gpu.workloads.compute_scalar import BaseComputeKernelExecutor
-from cross_gpu.workloads.registry import WorkloadExecutionContext, WorkloadExecutor
+from .compute_scalar import BaseComputeKernelExecutor
+from .registry import WorkloadExecutionContext, WorkloadExecutor
 
 
 class _BaseTensorFloatExecutor(BaseComputeKernelExecutor):

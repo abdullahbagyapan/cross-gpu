@@ -7,7 +7,7 @@ import ctypes
 import sys
 from typing import Any, Sequence
 
-from cross_gpu.backends.base import (
+from .base import (
     OPENCL_BACKEND_PRIORITY,
     BackendContext,
     BackendHardwareError,
@@ -25,8 +25,8 @@ from cross_gpu.backends.base import (
     load_shared_library,
     resolve_host_pointer,
 )
-from cross_gpu.exit_codes import KernelCompilationError
-from cross_gpu.models import BackendDeviceInfo, DeviceCapabilities
+from ..exit_codes import KernelCompilationError
+from ..models import BackendDeviceInfo, DeviceCapabilities
 
 OPENCL_LIB_CANDIDATES: tuple[str, ...] = (
     ("/System/Library/Frameworks/OpenCL.framework/OpenCL",)

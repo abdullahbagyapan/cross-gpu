@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from cross_gpu.workloads.common import (
+from .common import (
     BANDWIDTH_DISCRETE_CAP_BYTES,
     BANDWIDTH_MAX_HOST_RAM_RATIO,
     BANDWIDTH_MAX_VRAM_RATIO,
@@ -91,7 +91,7 @@ from cross_gpu.workloads.common import (
     verify_int_values,
     write_host_buffer,
 )
-from cross_gpu.workloads.compute_scalar import (
+from .compute_scalar import (
     SCALAR_EXECUTOR_CLASSES,
     BaseComputeKernelExecutor,
     ComputeBF16Executor,
@@ -106,14 +106,14 @@ from cross_gpu.workloads.compute_scalar import (
     ComputeInt32Executor,
     ComputeInt64Executor,
 )
-from cross_gpu.workloads.compute_tensor import (
+from .compute_tensor import (
     TENSOR_EXECUTOR_CLASSES,
     ComputeTensorBF16Executor,
     ComputeTensorFP16Executor,
     ComputeTensorFP32Executor,
     ComputeTensorInt8Executor,
 )
-from cross_gpu.workloads.memory import (
+from .memory import (
     MEMORY_EXECUTOR_CLASSES,
     BandwidthD2DExecutor,
     BandwidthD2HExecutor,
@@ -121,7 +121,7 @@ from cross_gpu.workloads.memory import (
     MemoryPatternExecutor,
     MemorySweepExecutor,
 )
-from cross_gpu.workloads.registry import (
+from .registry import (
     SI_UNIT_SCALE,
     WORKLOAD_REGISTRY,
     WORKLOAD_SPECS,

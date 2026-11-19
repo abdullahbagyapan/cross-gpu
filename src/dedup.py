@@ -6,8 +6,8 @@ from __future__ import annotations
 import re
 from typing import Callable, Iterable
 
-from cross_gpu.exit_codes import BackendInitError
-from cross_gpu.models import BackendBinding, BackendDeviceInfo, GPUDevice
+from .exit_codes import BackendInitError
+from .models import BackendBinding, BackendDeviceInfo, GPUDevice
 
 _BDF_PATTERN = re.compile(
     r"^(?:pci@)?(?:([0-9a-fA-F]{1,8}):)?([0-9a-fA-F]{1,2}):([0-9a-fA-F]{1,2})\.([0-7])$"

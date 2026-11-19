@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from cross_gpu.backends.base import (
+from .base import (
     NATIVE_BACKEND_PRIORITY,
     OPENCL_BACKEND_PRIORITY,
     BackendContext,
@@ -12,7 +12,7 @@ from cross_gpu.backends.base import (
     HostBuffer,
     KernelModule,
 )
-from cross_gpu.backends.registry import (
+from .registry import (
     discover_backends,
     enumerate_all_backend_devices,
     get_backend_plugin,

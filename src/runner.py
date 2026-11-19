@@ -11,10 +11,10 @@ import threading
 import time
 from typing import Any, Callable, Sequence
 
-from cross_gpu.backends.base import BackendContext, BackendPlugin, DiagCallback
-from cross_gpu.dedup import resolve_device_backend
-from cross_gpu.embed_binary import compile_kernel_runtime
-from cross_gpu.exit_codes import (
+from .backends.base import BackendContext, BackendPlugin, DiagCallback
+from .dedup import resolve_device_backend
+from .embed_binary import compile_kernel_runtime
+from .exit_codes import (
     BackendHardwareError,
     BackendInitError,
     ComputeError,
@@ -24,15 +24,15 @@ from cross_gpu.exit_codes import (
     UnsupportedKernelError,
     aggregate_exit_codes,
 )
-from cross_gpu.models import (
+from .models import (
     BackendBinding,
     BackendDeviceInfo,
     GPUDevice,
     TelemetrySample,
     WorkloadResult,
 )
-from cross_gpu.telemetry import TelemetrySampler, read_telemetry, sanitize_sample
-from cross_gpu.workloads import (
+from .telemetry import TelemetrySampler, read_telemetry, sanitize_sample
+from .workloads import (
     WORKLOAD_REGISTRY,
     WorkloadEntry,
     WorkloadExecutionContext,

@@ -17,21 +17,21 @@ import sys
 import tempfile
 from typing import Any, Mapping, Sequence
 
-from cross_gpu import __version__
-from cross_gpu.backends.base import (
+from . import __version__
+from .backends.base import (
     DiagCallback,
     bind_c_symbol,
     bind_optional_c_symbol,
     load_shared_library,
 )
-from cross_gpu.exit_codes import (
+from .exit_codes import (
     ExitCode,
     KernelCompilationError,
     KernelNotFoundError,
     UnsupportedKernelError,
 )
-from cross_gpu.models import DeviceCapabilities
-from cross_gpu.workloads import WORKLOAD_SPECS_BY_NAME, device_supports_workload
+from .models import DeviceCapabilities
+from .workloads import WORKLOAD_SPECS_BY_NAME, device_supports_workload
 
 NVRTC_LIB_CANDIDATES: tuple[str, ...] = ("libnvrtc.so.12", "libnvrtc.so", "libnvrtc.so.11.2")
 HIPRTC_LIB_CANDIDATES: tuple[str, ...] = (
@@ -182,7 +182,8 @@ def clear_kernel_source_cache() -> None:
 
 
 def _default_kernels_resource_root() -> Any:
-    return importlib_resources.files("cross_gpu").joinpath("kernels")
+    root_pkg = (__package__ or "src").split(".")[0]
+    return importlib_resources.files(root_pkg).joinpath("kernels")
 
 
 def load_kernel_source(
@@ -193,7 +194,7 @@ def load_kernel_source(
     resource_root: Any | None = None,
     use_cache: bool = True,
 ) -> KernelSource:
-    """Load raw UTF-8 kernel source directly from packaged cross_gpu/kernels/ data."""
+    """Load raw UTF-8 kernel source directly from packaged kernels/ data."""
     normalized = normalize_workload_name(workload)
     key = (backend, normalized)
     active_specs = KERNEL_SPECS if specs is None else specs
@@ -274,7 +275,7 @@ def verify_kernel_resources(
                     f"{backend}:{workload}: missing declared entry point {ep!r} in {spec.filename}"
                 )
 
-    # Detect orphan kernel files under cross_gpu/kernels/<backend>/ not in KERNEL_SPECS.
+    # Detect orphan kernel files under kernels/<backend>/ not in KERNEL_SPECS.
     try:
         top_entries = sorted(root.iterdir(), key=lambda p: p.name)
     except OSError as exc:
@@ -1124,9 +1125,10 @@ def compile_kernel_runtime(
         raw_bytes = loaded.source_bytes
         resolved_entry = entry_point or loaded.entry_point
         if diag_fn is not None:
+            root_pkg = (__package__ or "src").split(".")[0]
             diag_fn(
                 f"kernel lookup [{backend}:{normalized_workload}]: "
-                f"importlib.resources cross_gpu/kernels/{loaded.backend}/{loaded.filename} "
+                f"importlib.resources {root_pkg}/kernels/{loaded.backend}/{loaded.filename} "
                 f"({loaded.size_bytes} B)"
             )
 
@@ -1240,8 +1242,9 @@ def compile_kernel_runtime(
 
 
 def _main(argv: Sequence[str] | None = None) -> int:
+    root_pkg = (__package__ or "src").split(".")[0]
     parser = argparse.ArgumentParser(
-        prog="python3 -m cross_gpu.embed_binary",
+        prog=f"python3 -m {root_pkg}.embed_binary",
         description="Verify and list packaged raw GPU kernel sources.",
     )
     sub = parser.add_subparsers(dest="action", required=True)

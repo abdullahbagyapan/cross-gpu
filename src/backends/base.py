@@ -11,8 +11,8 @@ from pathlib import Path
 import sys
 from typing import Any, Callable, Sequence
 
-from cross_gpu.exit_codes import BackendHardwareError, BackendInitError
-from cross_gpu.models import BackendDeviceInfo
+from ..exit_codes import BackendHardwareError, BackendInitError
+from ..models import BackendDeviceInfo
 
 NATIVE_BACKEND_PRIORITY = 100
 OPENCL_BACKEND_PRIORITY = 50

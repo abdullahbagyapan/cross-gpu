@@ -7,7 +7,7 @@ import ctypes
 import re
 from typing import Any, Sequence
 
-from cross_gpu.backends.base import (
+from .base import (
     NATIVE_BACKEND_PRIORITY,
     BackendContext,
     BackendHardwareError,
@@ -25,7 +25,7 @@ from cross_gpu.backends.base import (
     load_shared_library,
     resolve_host_pointer,
 )
-from cross_gpu.models import BackendDeviceInfo, DeviceCapabilities
+from ..models import BackendDeviceInfo, DeviceCapabilities
 
 HIP_LIB_CANDIDATES: tuple[str, ...] = (
     "libamdhip64.so.6",

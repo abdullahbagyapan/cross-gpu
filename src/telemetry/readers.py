@@ -11,9 +11,9 @@ import subprocess
 import sys
 from typing import Any, Mapping
 
-from cross_gpu.backends.base import bind_c_symbol, bind_optional_c_symbol, load_shared_library
-from cross_gpu.dedup import normalize_pci_bdf
-from cross_gpu.models import TelemetrySample
+from ..backends.base import bind_c_symbol, bind_optional_c_symbol, load_shared_library
+from ..dedup import normalize_pci_bdf
+from ..models import TelemetrySample
 
 NVML_LIB_CANDIDATES: tuple[str, ...] = ("libnvidia-ml.so.1", "libnvidia-ml.so")
 NVML_SUCCESS = 0

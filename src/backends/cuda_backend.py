@@ -6,7 +6,7 @@ from __future__ import annotations
 import ctypes
 from typing import Any, Sequence
 
-from cross_gpu.backends.base import (
+from .base import (
     NATIVE_BACKEND_PRIORITY,
     BackendContext,
     BackendHardwareError,
@@ -23,7 +23,7 @@ from cross_gpu.backends.base import (
     load_shared_library,
     resolve_host_pointer,
 )
-from cross_gpu.models import BackendDeviceInfo, DeviceCapabilities
+from ..models import BackendDeviceInfo, DeviceCapabilities
 
 CUDA_LIB_CANDIDATES: tuple[str, ...] = ("libcuda.so.1", "libcuda.so")
 NVIDIA_PCI_VENDOR_ID = 0x10DE

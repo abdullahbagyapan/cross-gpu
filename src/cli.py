@@ -13,19 +13,19 @@ import sys
 import threading
 from typing import Any, Callable, Mapping, Sequence, TextIO
 
-from cross_gpu import __version__
-from cross_gpu.backends.base import DiagCallback
-from cross_gpu.backends.registry import (
+from . import __version__
+from .backends.base import DiagCallback
+from .backends.registry import (
     KNOWN_BACKENDS,
     enumerate_all_backend_devices,
     enumerate_all_backend_devices_with_diagnostics,
 )
-from cross_gpu.dedup import deduplicate_devices
-from cross_gpu.exit_codes import ExitCode, UsageError
-from cross_gpu.models import GPUDevice, WorkloadResult
-from cross_gpu.runner import StressRunner
-from cross_gpu.telemetry import sanitize_metrics_dict
-from cross_gpu.workloads import WORKLOAD_REGISTRY, list_workload_names
+from .dedup import deduplicate_devices
+from .exit_codes import ExitCode, UsageError
+from .models import GPUDevice, WorkloadResult
+from .runner import StressRunner
+from .telemetry import sanitize_metrics_dict
+from .workloads import WORKLOAD_REGISTRY, list_workload_names
 
 _DURATION_PATTERN = re.compile(
     r"^\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+))\s*(ms|[smh])\s*$",

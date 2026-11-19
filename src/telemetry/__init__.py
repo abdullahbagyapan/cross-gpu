@@ -8,8 +8,8 @@ import threading
 import time
 from typing import Callable
 
-from cross_gpu.models import BackendDeviceInfo, GPUDevice, TelemetrySample
-from cross_gpu.telemetry.readers import (
+from ..models import BackendDeviceInfo, GPUDevice, TelemetrySample
+from .readers import (
     merge_samples,
     read_linux_sysfs,
     read_macos,
