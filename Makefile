@@ -1,7 +1,11 @@
 PYTHON ?= python3
 PREFIX ?= /usr/local
 DESTDIR ?=
-MANDIR ?= $(PREFIX)/share/man/man1
+DATADIR ?= $(PREFIX)/share
+MANDIR ?= $(DATADIR)/man/man1
+BASHCOMPDIR ?= $(DATADIR)/bash-completion/completions
+ZSHCOMPDIR ?= $(DATADIR)/zsh/site-functions
+FISHCOMPDIR ?= $(DATADIR)/fish/vendor_completions.d
 
 .PHONY: test check install clean
 
@@ -18,6 +22,12 @@ install:
 		--prefix="$(PREFIX)" $(if $(DESTDIR),--root="$(DESTDIR)",) .
 	install -d "$(DESTDIR)$(MANDIR)"
 	install -m 644 docs/cross-gpu.1 "$(DESTDIR)$(MANDIR)/cross-gpu.1"
+	install -d "$(DESTDIR)$(BASHCOMPDIR)"
+	install -m 644 completions/cross-gpu.bash "$(DESTDIR)$(BASHCOMPDIR)/cross-gpu"
+	install -d "$(DESTDIR)$(ZSHCOMPDIR)"
+	install -m 644 completions/_cross-gpu "$(DESTDIR)$(ZSHCOMPDIR)/_cross-gpu"
+	install -d "$(DESTDIR)$(FISHCOMPDIR)"
+	install -m 644 completions/cross-gpu.fish "$(DESTDIR)$(FISHCOMPDIR)/cross-gpu.fish"
 
 clean:
 	rm -rf build dist *.egg-info

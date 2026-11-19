@@ -1,0 +1,79 @@
+#compdef cross-gpu
+
+_cross_gpu() {
+    local context state state_descr line
+    typeset -A opt_args
+
+    local -a subcommands
+    subcommands=(
+        'list:List detected GPU devices'
+        'info:Show detailed information for detected GPUs'
+        'run:Run GPU stress workloads'
+    )
+
+    local -a workloads
+    workloads=(
+        all
+        compute-int64
+        compute-int32
+        compute-int16
+        compute-int8
+        compute-int4
+        compute-fp64
+        compute-fp32
+        compute-fp16
+        compute-fp8
+        compute-fp4
+        compute-bf16
+        compute-tensor-fp32
+        compute-tensor-fp16
+        compute-tensor-bf16
+        compute-tensor-int8
+        memory-pattern
+        memory-sweep
+        bandwidth-d2d
+        bandwidth-h2d
+        bandwidth-d2h
+    )
+
+    local -a backends
+    backends=(auto cuda hip levelzero metal opencl)
+
+    _arguments -C \
+        '(-h --help)'{-h,--help}'[Show help message and exit]' \
+        '--version[Show version information and exit]' \
+        '(-v --verbose)'{-v,--verbose}'[Write detailed diagnostics to stderr]' \
+        '1:command:->cmds' \
+        '*::arg:->args'
+
+    case "${state}" in
+        cmds)
+            _describe -t commands 'cross-gpu command' subcommands
+            ;;
+        args)
+            case "${line[1]}" in
+                list|info)
+                    _arguments \
+                        '(-h --help)'{-h,--help}'[Show help message and exit]' \
+                        '--format[Output format]:format:(text json)' \
+                        '--json[Shortcut for --format json]' \
+                        '(-v --verbose)'{-v,--verbose}'[Write detailed diagnostics to stderr]'
+                    ;;
+                run)
+                    _arguments \
+                        '(-h --help)'{-h,--help}'[Show help message and exit]' \
+                        '--device[Target device index or all]:device:(all 0 1 2 3)' \
+                        "--test[Workload name, comma-separated list, or all]:test:_values -s , 'workload' ${workloads[*]}" \
+                        '--duration[Timed execution duration per workload]:duration:(10s 30s 60s 5m 10m 1h)' \
+                        '--warmup[Optional warmup duration before each workload]::warmup:(5s 10s 30s)' \
+                        "--backend[Target backend plugin]:backend:(${backends[*]})" \
+                        '--format[Output format]:format:(text json)' \
+                        '--json[Shortcut for --format json]' \
+                        '(-v --verbose)'{-v,--verbose}'[Write detailed diagnostics to stderr]'
+                    ;;
+            esac
+            ;;
+    esac
+}
+
+_cross_gpu "$@"
