@@ -180,7 +180,7 @@ class TelemetrySample:
     fan_speed_rpm: int | None = None
 
     def to_dict(self) -> dict[str, float | int | None]:
-        """Return all 8 required telemetry fields in canonical order."""
+        """Return all 8 telemetry fields in canonical order."""
         return {
             "temperature_c": self.temperature_c,
             "power_w": self.power_w,
@@ -191,6 +191,10 @@ class TelemetrySample:
             "fan_speed_pct": self.fan_speed_pct,
             "fan_speed_rpm": self.fan_speed_rpm,
         }
+
+    def to_usable_dict(self) -> dict[str, float | int]:
+        """Return only non-None telemetry fields in canonical order."""
+        return {key: val for key, val in self.to_dict().items() if val is not None}
 
 
 @dataclass

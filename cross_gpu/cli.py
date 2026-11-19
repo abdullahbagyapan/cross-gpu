@@ -24,6 +24,7 @@ from cross_gpu.dedup import deduplicate_devices
 from cross_gpu.exit_codes import ExitCode, UsageError
 from cross_gpu.models import GPUDevice, WorkloadResult
 from cross_gpu.runner import StressRunner
+from cross_gpu.telemetry import sanitize_metrics_dict
 from cross_gpu.workloads import WORKLOAD_REGISTRY, list_workload_names
 
 _DURATION_PATTERN = re.compile(
@@ -482,16 +483,35 @@ def format_progress_prefix(
 
 
 def format_telemetry_line(event: dict[str, Any]) -> str:
-    """Format a 1 Hz telemetry event as a compact single line with all 8 fields & units."""
-    m = event.get("metrics", {})
-    temp = f"{m['temperature_c']:.1f}°C" if m.get("temperature_c") is not None else "N/A °C"
-    pwr = f"{m['power_w']:.1f}W" if m.get("power_w") is not None else "N/A W"
-    gpu = f"{m['gpu_util_pct']:.0f}%" if m.get("gpu_util_pct") is not None else "N/A %"
-    mem = f"{m['mem_util_pct']:.0f}%" if m.get("mem_util_pct") is not None else "N/A %"
-    cclk = f"{m['core_clock_mhz']}MHz" if m.get("core_clock_mhz") is not None else "N/A MHz"
-    mclk = f"{m['mem_clock_mhz']}MHz" if m.get("mem_clock_mhz") is not None else "N/A MHz"
-    fan_p = f"{m['fan_speed_pct']:.0f}%" if m.get("fan_speed_pct") is not None else "N/A %"
-    fan_r = f"{m['fan_speed_rpm']}RPM" if m.get("fan_speed_rpm") is not None else "N/A RPM"
+    """Format a 1 Hz telemetry event using only usable sensors; returns '' if none usable."""
+    m = sanitize_metrics_dict(event.get("metrics"))
+    if not m:
+        return ""
+
+    parts: list[str] = []
+    if "temperature_c" in m:
+        parts.append(f"{float(m['temperature_c']):.1f}°C")
+    if "power_w" in m:
+        parts.append(f"{float(m['power_w']):.1f}W")
+    if "gpu_util_pct" in m:
+        parts.append(f"GPU {float(m['gpu_util_pct']):.0f}%")
+    if "mem_util_pct" in m:
+        parts.append(f"Mem {float(m['mem_util_pct']):.0f}%")
+    if "core_clock_mhz" in m:
+        parts.append(f"Core {int(m['core_clock_mhz'])}MHz")
+    if "mem_clock_mhz" in m:
+        parts.append(f"MemClk {int(m['mem_clock_mhz'])}MHz")
+
+    fan_pct = m.get("fan_speed_pct")
+    fan_rpm = m.get("fan_speed_rpm")
+    if fan_pct is not None and fan_rpm is not None:
+        parts.append(f"Fan {float(fan_pct):.0f}%/{int(fan_rpm)}RPM")
+    elif fan_pct is not None:
+        parts.append(f"Fan {float(fan_pct):.0f}%")
+    elif fan_rpm is not None:
+        parts.append(f"Fan {int(fan_rpm)}RPM")
+
+    metrics_str = " | ".join(parts)
 
     wl_idx = event.get("workload_index")
     wl_total = event.get("workload_total")
@@ -504,17 +524,11 @@ def format_telemetry_line(event: dict[str, Any]) -> str:
             phase_elapsed_s=float(event.get("phase_elapsed_s", event.get("elapsed_s", 0.0))),
             phase_duration_s=float(event.get("phase_duration_s", 0.0)),
         )
-        return (
-            f"{prefix} dev={event.get('device')} | "
-            f"Temp={temp} Power={pwr} GPU={gpu} Mem={mem} "
-            f"CoreClk={cclk} MemClk={mclk} Fan={fan_p}/{fan_r}"
-        )
+        return f"{prefix} dev={event.get('device')} | {metrics_str}"
 
     return (
         f"[{event.get('elapsed_s', 0.0):6.1f}s] dev={event.get('device')} "
-        f"phase={event.get('phase')} workload={event.get('workload')} | "
-        f"Temp={temp} Power={pwr} GPU={gpu} Mem={mem} "
-        f"CoreClk={cclk} MemClk={mclk} Fan={fan_p}/{fan_r}"
+        f"phase={event.get('phase')} workload={event.get('workload')} | {metrics_str}"
     )
 
 
@@ -774,12 +788,19 @@ def main(
                     err.flush()
 
                 if fmt == "json":
+                    if etype == "telemetry":
+                        clean_metrics = sanitize_metrics_dict(event.get("metrics"))
+                        if not clean_metrics:
+                            return
+                        event = {**event, "metrics": clean_metrics}
                     out.write(json.dumps(event) + "\n")
                     out.flush()
                     return
                 if etype == "telemetry":
-                    out.write(format_telemetry_line(event) + "\n")
-                    out.flush()
+                    line = format_telemetry_line(event)
+                    if line:
+                        out.write(line + "\n")
+                        out.flush()
                 elif etype == "workload_result":
                     out.write(format_workload_status_line(event) + "\n")
                     out.flush()

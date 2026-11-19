@@ -14,6 +14,8 @@ from cross_gpu.telemetry.readers import (
     read_linux_sysfs,
     read_macos,
     read_nvml,
+    sanitize_metrics_dict,
+    sanitize_sample,
 )
 
 
@@ -106,4 +108,4 @@ class TelemetrySampler:
                 break
 
 
-__all__ = ["TelemetrySampler", "read_telemetry"]
+__all__ = ["TelemetrySampler", "read_telemetry", "sanitize_metrics_dict", "sanitize_sample"]

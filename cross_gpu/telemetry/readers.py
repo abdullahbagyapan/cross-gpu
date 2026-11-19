@@ -4,11 +4,12 @@
 from __future__ import annotations
 
 import ctypes
+import math
 from pathlib import Path
 import re
 import subprocess
 import sys
-from typing import Any
+from typing import Any, Mapping
 
 from cross_gpu.backends.base import bind_c_symbol, bind_optional_c_symbol, load_shared_library
 from cross_gpu.dedup import normalize_pci_bdf
@@ -21,6 +22,85 @@ NVML_CLOCK_GRAPHICS = 0
 NVML_CLOCK_MEM = 2
 
 _DRM_SYSFS_ROOT = Path("/sys/class/drm")
+_TEMP_MIN_EXCLUSIVE_C = -40.0
+_TEMP_MAX_EXCLUSIVE_C = 200.0
+_FAN_RPM_SENTINEL_MAX = 65535
+
+
+def _as_finite_float(val: Any) -> float | None:
+    if val is None or isinstance(val, bool):
+        return None
+    try:
+        num = float(val)
+    except (TypeError, ValueError):
+        return None
+    return num if math.isfinite(num) else None
+
+
+def _sanitize_temperature_c(val: Any) -> float | None:
+    num = _as_finite_float(val)
+    if num is None or not (_TEMP_MIN_EXCLUSIVE_C < num < _TEMP_MAX_EXCLUSIVE_C):
+        return None
+    return num
+
+
+def _sanitize_power_w(val: Any) -> float | None:
+    num = _as_finite_float(val)
+    if num is None or num < 0.0:
+        return None
+    return num
+
+
+def _sanitize_pct(val: Any) -> float | None:
+    num = _as_finite_float(val)
+    if num is None or not (0.0 <= num <= 100.0):
+        return None
+    return num
+
+
+def _sanitize_clock_mhz(val: Any) -> int | None:
+    num = _as_finite_float(val)
+    if num is None or num <= 0.0:
+        return None
+    return int(round(num))
+
+
+def _sanitize_fan_rpm(val: Any) -> int | None:
+    num = _as_finite_float(val)
+    if num is None or num < 0.0 or num >= _FAN_RPM_SENTINEL_MAX:
+        return None
+    return int(round(num))
+
+
+def sanitize_sample(sample: TelemetrySample) -> TelemetrySample:
+    """Normalize any missing, non-finite, out-of-range, or sentinel sensor reading to None."""
+    return TelemetrySample(
+        temperature_c=_sanitize_temperature_c(sample.temperature_c),
+        power_w=_sanitize_power_w(sample.power_w),
+        gpu_util_pct=_sanitize_pct(sample.gpu_util_pct),
+        mem_util_pct=_sanitize_pct(sample.mem_util_pct),
+        core_clock_mhz=_sanitize_clock_mhz(sample.core_clock_mhz),
+        mem_clock_mhz=_sanitize_clock_mhz(sample.mem_clock_mhz),
+        fan_speed_pct=_sanitize_pct(sample.fan_speed_pct),
+        fan_speed_rpm=_sanitize_fan_rpm(sample.fan_speed_rpm),
+    )
+
+
+def sanitize_metrics_dict(metrics: Mapping[str, Any] | None) -> dict[str, float | int]:
+    """Sanitize a raw telemetry metrics mapping and omit all unusable/None keys."""
+    if not metrics:
+        return {}
+    sample = TelemetrySample(
+        temperature_c=metrics.get("temperature_c"),
+        power_w=metrics.get("power_w"),
+        gpu_util_pct=metrics.get("gpu_util_pct"),
+        mem_util_pct=metrics.get("mem_util_pct"),
+        core_clock_mhz=metrics.get("core_clock_mhz"),
+        mem_clock_mhz=metrics.get("mem_clock_mhz"),
+        fan_speed_pct=metrics.get("fan_speed_pct"),
+        fan_speed_rpm=metrics.get("fan_speed_rpm"),
+    )
+    return sanitize_sample(sample).to_usable_dict()
 
 
 class _NvmlUtilization(ctypes.Structure):
@@ -149,15 +229,17 @@ def read_nvml(pci_bdf: str | None) -> TelemetrySample:
     if _NVML_CLIENT.nvmlDeviceGetFanSpeed(dev, ctypes.byref(u_val)) == NVML_SUCCESS:
         fan_pct = float(u_val.value)
 
-    return TelemetrySample(
-        temperature_c=temp_c,
-        power_w=power_w,
-        gpu_util_pct=gpu_util,
-        mem_util_pct=mem_util,
-        core_clock_mhz=core_mhz,
-        mem_clock_mhz=mem_mhz,
-        fan_speed_pct=fan_pct,
-        fan_speed_rpm=None,
+    return sanitize_sample(
+        TelemetrySample(
+            temperature_c=temp_c,
+            power_w=power_w,
+            gpu_util_pct=gpu_util,
+            mem_util_pct=mem_util,
+            core_clock_mhz=core_mhz,
+            mem_clock_mhz=mem_mhz,
+            fan_speed_pct=fan_pct,
+            fan_speed_rpm=None,
+        )
     )
 
 
@@ -249,19 +331,21 @@ def read_linux_sysfs(
                 if raw_pwm is not None:
                     pwm_max = _read_sysfs_int(hw_dir / "pwm1_max") or 255
                     if pwm_max > 0:
-                        fan_pct = round(min(100.0, max(0.0, raw_pwm * 100.0 / pwm_max)), 1)
+                        fan_pct = round(raw_pwm * 100.0 / pwm_max, 1)
             if fan_rpm is None:
                 fan_rpm = _read_sysfs_int(hw_dir / "fan1_input")
 
-    return TelemetrySample(
-        temperature_c=temp_c,
-        power_w=power_w,
-        gpu_util_pct=float(gpu_busy) if gpu_busy is not None else None,
-        mem_util_pct=float(mem_busy) if mem_busy is not None else None,
-        core_clock_mhz=core_mhz,
-        mem_clock_mhz=mem_mhz,
-        fan_speed_pct=fan_pct,
-        fan_speed_rpm=fan_rpm,
+    return sanitize_sample(
+        TelemetrySample(
+            temperature_c=temp_c,
+            power_w=power_w,
+            gpu_util_pct=float(gpu_busy) if gpu_busy is not None else None,
+            mem_util_pct=float(mem_busy) if mem_busy is not None else None,
+            core_clock_mhz=core_mhz,
+            mem_clock_mhz=mem_mhz,
+            fan_speed_pct=fan_pct,
+            fan_speed_rpm=fan_rpm,
+        )
     )
 
 
@@ -320,15 +404,17 @@ def parse_ioreg_output(output: str, registry_id: int | None) -> TelemetrySample:
     fan_pct = _extract_ioreg_number(scope, "Fan Speed(%)")
     fan_rpm = _extract_ioreg_number(scope, "Fan Speed(RPM)")
 
-    return TelemetrySample(
-        temperature_c=temp_c,
-        power_w=power_w,
-        gpu_util_pct=gpu_util,
-        mem_util_pct=mem_util,
-        core_clock_mhz=int(core_clk) if core_clk is not None else None,
-        mem_clock_mhz=int(mem_clk) if mem_clk is not None else None,
-        fan_speed_pct=fan_pct,
-        fan_speed_rpm=int(fan_rpm) if fan_rpm is not None else None,
+    return sanitize_sample(
+        TelemetrySample(
+            temperature_c=temp_c,
+            power_w=power_w,
+            gpu_util_pct=gpu_util,
+            mem_util_pct=mem_util,
+            core_clock_mhz=int(core_clk) if core_clk is not None else None,
+            mem_clock_mhz=int(mem_clk) if mem_clk is not None else None,
+            fan_speed_pct=fan_pct,
+            fan_speed_rpm=int(fan_rpm) if fan_rpm is not None else None,
+        )
     )
 
 
@@ -352,29 +438,49 @@ def read_macos(registry_id: int | None) -> TelemetrySample:
 
 
 def merge_samples(primary: TelemetrySample, fallback: TelemetrySample) -> TelemetrySample:
-    """Fill missing fields in primary TelemetrySample using fallback values."""
+    """Fill missing fields in sanitized primary TelemetrySample using sanitized fallback values."""
+    clean_primary = sanitize_sample(primary)
+    clean_fallback = sanitize_sample(fallback)
     return TelemetrySample(
         temperature_c=(
-            primary.temperature_c if primary.temperature_c is not None else fallback.temperature_c
+            clean_primary.temperature_c
+            if clean_primary.temperature_c is not None
+            else clean_fallback.temperature_c
         ),
-        power_w=primary.power_w if primary.power_w is not None else fallback.power_w,
+        power_w=(
+            clean_primary.power_w
+            if clean_primary.power_w is not None
+            else clean_fallback.power_w
+        ),
         gpu_util_pct=(
-            primary.gpu_util_pct if primary.gpu_util_pct is not None else fallback.gpu_util_pct
+            clean_primary.gpu_util_pct
+            if clean_primary.gpu_util_pct is not None
+            else clean_fallback.gpu_util_pct
         ),
         mem_util_pct=(
-            primary.mem_util_pct if primary.mem_util_pct is not None else fallback.mem_util_pct
+            clean_primary.mem_util_pct
+            if clean_primary.mem_util_pct is not None
+            else clean_fallback.mem_util_pct
         ),
         core_clock_mhz=(
-            primary.core_clock_mhz if primary.core_clock_mhz is not None else fallback.core_clock_mhz
+            clean_primary.core_clock_mhz
+            if clean_primary.core_clock_mhz is not None
+            else clean_fallback.core_clock_mhz
         ),
         mem_clock_mhz=(
-            primary.mem_clock_mhz if primary.mem_clock_mhz is not None else fallback.mem_clock_mhz
+            clean_primary.mem_clock_mhz
+            if clean_primary.mem_clock_mhz is not None
+            else clean_fallback.mem_clock_mhz
         ),
         fan_speed_pct=(
-            primary.fan_speed_pct if primary.fan_speed_pct is not None else fallback.fan_speed_pct
+            clean_primary.fan_speed_pct
+            if clean_primary.fan_speed_pct is not None
+            else clean_fallback.fan_speed_pct
         ),
         fan_speed_rpm=(
-            primary.fan_speed_rpm if primary.fan_speed_rpm is not None else fallback.fan_speed_rpm
+            clean_primary.fan_speed_rpm
+            if clean_primary.fan_speed_rpm is not None
+            else clean_fallback.fan_speed_rpm
         ),
     )
 
@@ -385,4 +491,6 @@ __all__ = [
     "read_linux_sysfs",
     "read_macos",
     "read_nvml",
+    "sanitize_metrics_dict",
+    "sanitize_sample",
 ]

@@ -31,7 +31,7 @@ from cross_gpu.models import (
     TelemetrySample,
     WorkloadResult,
 )
-from cross_gpu.telemetry import TelemetrySampler, read_telemetry
+from cross_gpu.telemetry import TelemetrySampler, read_telemetry, sanitize_sample
 from cross_gpu.workloads import (
     WORKLOAD_REGISTRY,
     WorkloadEntry,
@@ -245,6 +245,9 @@ class StressRunner:
         )
 
         def on_sample(sample: TelemetrySample, elapsed_s: float) -> None:
+            usable_metrics = sanitize_sample(sample).to_usable_dict()
+            if not usable_metrics:
+                return
             (
                 phase,
                 workload_name,
@@ -265,7 +268,7 @@ class StressRunner:
                     "workload_total": wl_total,
                     "phase_elapsed_s": round(phase_elapsed, 3),
                     "phase_duration_s": round(phase_duration, 3),
-                    "metrics": sample.to_dict(),
+                    "metrics": usable_metrics,
                 }
             )
 
