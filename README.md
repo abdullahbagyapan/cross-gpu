@@ -2,6 +2,8 @@
 
 Cross-platform GPU discovery, hardware telemetry, and stress-testing CLI targeting **Linux** (`x86_64`, `aarch64`) and **macOS** (`arm64`, `x86_64`), built exclusively with the **Python 3.10+ standard library** and **zero external runtime dependencies**.
 
+![Terminal Demo](./assets/demo.gif)
+
 ## Highlights
 
 - **5 native `ctypes` backends:** CUDA (`libcuda.so.1`), HIP (`libamdhip64.so.6`), oneAPI Level Zero (`libze_loader.so.1`), Apple Metal (`libobjc.A.dylib` + `Metal.framework`), and OpenCL (`libOpenCL.so.1` / `OpenCL.framework`).
