@@ -63,12 +63,14 @@ workloads:
 \fBbandwidth-d2h\fR.
 .TP
 .BI \-\-duration " TIME"
-Timed execution duration per workload using suffix \fBs\fR, \fBm\fR, or
-\fBh\fR (for example \fB60s\fR, \fB5m\fR, \fB1h\fR). Default: \fB60s\fR.
+Timed execution duration per workload using suffix \fBms\fR, \fBs\fR, \fBm\fR,
+or \fBh\fR (for example \fB250ms\fR, \fB500ms\fR, \fB60s\fR, \fB5m\fR,
+\fB1h\fR). Must be strictly greater than zero. Default: \fB60s\fR.
 .TP
 .BI \-\-warmup " [TIME]"
-Warmup duration before each workload. Defaults to \fB0s\fR when omitted,
-\fB5s\fR when passed without a value, or the explicitly specified duration.
+Warmup duration before each workload using suffix \fBms\fR, \fBs\fR, \fBm\fR,
+or \fBh\fR. Defaults to \fB0s\fR when omitted, \fB5s\fR when passed without a
+value, or the explicitly specified duration (including \fB0ms\fR / \fB0s\fR).
 .TP
 .BI \-\-backend " auto|PLUGIN_NAME"
 Select \fBauto\fR (highest-priority backend per device, default) or a specific
@@ -77,7 +79,10 @@ backend plugin name (\fBcuda\fR, \fBhip\fR, \fBlevelzero\fR, \fBmetal\fR,
 .TP
 .BI \-\-format " text|json"
 Output format (\fBtext\fR default, or \fBjson\fR). In \fBrun\fR mode,
-\fBjson\fR emits streaming newline-delimited JSON (NDJSON).
+\fBjson\fR emits streaming newline-delimited JSON (NDJSON). Unusable or
+unavailable telemetry sensors are omitted from both \fBtext\fR lines (never
+printing placeholders) and NDJSON \fBmetrics\fR objects, and ticks with zero
+usable sensors are suppressed.
 .TP
 .B \-\-json
 Convenience shortcut for \fB\-\-format json\fR. Cannot be combined with

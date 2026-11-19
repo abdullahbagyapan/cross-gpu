@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `CROSS_GPU_NO_CACHE` environment override (bypassing disk cache reads/writes) and explicit `XDG_CACHE_HOME` override support across both Linux and macOS.
 - Static shell completion scripts for Bash (`completions/cross-gpu.bash`), Zsh (`completions/_cross-gpu`), and Fish (`completions/cross-gpu.fish`), along with FHS-compliant `Makefile` install targets (`PREFIX` / `DESTDIR`).
 - `SPDX-License-Identifier: MIT` headers across Python sources, native GPU kernels, shell completions, and `Makefile`.
+- Millisecond (`ms`) timing support for `--duration` and `--warmup` (e.g., `250ms`, `500ms`), sub-second progress formatting (`250ms/500ms`), and short-duration batch calibration capping.
+- Telemetry sensor sanitization (`NaN`/`Inf`, sentinel/out-of-range filtering) that omits unusable fields from `text` and JSON/NDJSON outputs and suppresses empty telemetry ticks.
 
 ### Changed
 - Refactored `cross_gpu/embed_binary.py` to load raw kernel source files directly via Python standard library `importlib.resources` with plain tuple in-memory cache keys and sanitized, metadata-validated disk cache artifacts (removing all opaque base64 blobs and digest hashing).

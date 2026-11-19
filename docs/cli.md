@@ -23,8 +23,17 @@ cross-gpu --version
 cross-gpu list
 cross-gpu info --json
 cross-gpu run --device 0 --test compute-fp32,memory-pattern --warmup 5s --duration 30s
+cross-gpu run --device 0 --test compute-fp32 --warmup 250ms --duration 500ms
 cross-gpu run --backend opencl --test all --duration 60s --json
 ```
+
+### Duration Syntax (`--duration`, `--warmup`)
+
+Durations accept suffixes `ms`, `s`, `m`, and `h` (case-insensitive, e.g., `250ms`, `500ms`, `1.5s`, `5m`, `1h`):
+
+- `--duration` must be strictly `> 0` (invalid values such as `0ms`, `-100ms`, `ms`, or `10mms` exit with `ExitCode.USAGE_ERROR (1)`).
+- `--warmup` accepts `0ms` / `0s` when explicitly passed; bare `--warmup` defaults to `5s`; omitting `--warmup` defaults to `0s`.
+- Sub-second runs (`< 1s`) automatically cap batch calibration targets below the requested duration and wake the telemetry thread immediately on completion.
 
 ---
 
@@ -45,10 +54,12 @@ cross-gpu run --backend opencl --test all --duration 60s --json
   - `cross-gpu: error: unknown command 'lsit'. Did you mean: list?`
   - `cross-gpu: error: unknown backend 'cdua'. Did you mean: cuda?`
   - `cross-gpu: error: unknown test 'fp32'. Did you mean: compute-fp32?`
-- **`text`-Mode Progress & Summary Tally:**
-  - Live 1 Hz telemetry and completion lines include zero-padded workload counters and elapsed/total time:
+- **`text`-Mode Progress, Filtered Telemetry & Summary Tally:**
+  - Live 1 Hz telemetry and completion lines include zero-padded workload counters and elapsed/total time, displaying milliseconds for sub-second runs:
+    - Sub-second run: `[01/04 compute-fp32 | 250ms/500ms]`
     - Warmup phase: `[04/20 compute-fp32 | warmup 3s/5s]`
     - Timed phase: `[04/20 compute-fp32 | 18s/60s]`
+  - Live telemetry omits all unavailable/unusable sensors (never printing `N/A` in `text` mode or `null` keys in JSON/NDJSON `"metrics"`); ticks with zero usable sensors are suppressed completely. See [telemetry.md](telemetry.md).
   - Runs end with an aligned summary table and a final tally line reporting `passed`, `failed`, `unsupported`, and `hardware_error` counts alongside the resolved exit code.
 - **Explicit Unsupported Reasons:** Every workload marked `status="unsupported"` includes a specific `reason` string in both `text` output and JSON/NDJSON `workload_result` events (for example, `requires CUDA SM >= 8.9 (detected SM 8.6)`, `Metal lacks native fp64`, or `OpenCL device missing cl_khr_fp16 extension`).
 
