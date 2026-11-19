@@ -50,20 +50,24 @@ kernel void kernel_compute_tensor_fp16(
     threadgroup half* tile = scratch + (sgid & 31u) * 64u;
 
     float lane_sum = 0.0f;
+    /* Threadgroup barriers ensure simdgroup_store visibility and prevent WAR hazards on reused tile scratch. */
     simdgroup_store(c0, tile, 8);
-    simdgroup_barrier(mem_flags::mem_threadgroup);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
     lane_sum += float(tile[sgl]) + float(tile[sgl + 32u]);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
 
     simdgroup_store(c1, tile, 8);
-    simdgroup_barrier(mem_flags::mem_threadgroup);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
     lane_sum += float(tile[sgl]) + float(tile[sgl + 32u]);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
 
     simdgroup_store(c2, tile, 8);
-    simdgroup_barrier(mem_flags::mem_threadgroup);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
     lane_sum += float(tile[sgl]) + float(tile[sgl + 32u]);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
 
     simdgroup_store(c3, tile, 8);
-    simdgroup_barrier(mem_flags::mem_threadgroup);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
     lane_sum += float(tile[sgl]) + float(tile[sgl + 32u]);
 
     if (gid < num_elements) {
