@@ -1,4 +1,4 @@
-"""Unit tests for embedded kernel packing, verification, caching, and runtime compiler paths."""
+"""Unit tests for importlib.resources kernel loading, verification, caching, and runtime compilation."""
 
 from __future__ import annotations
 
@@ -13,20 +13,18 @@ import unittest
 from unittest import mock
 
 from cross_gpu.embed_binary import (
-    EMBEDDED_KERNELS,
+    KERNEL_SPECS,
     RuntimeBinaryCache,
     compile_kernel_runtime,
-    compute_cache_key,
-    decode_payload,
+    compute_disk_cache_name,
+    compute_memory_cache_key,
     default_cache_dir,
     default_entry_points,
-    encode_payload,
-    get_embedded_kernel,
-    pack_kernels,
-    scan_kernels_directory,
-    verify_embedded_kernels,
+    load_kernel_source,
+    verify_kernel_resources,
 )
 from cross_gpu.exit_codes import (
+    ExitCode,
     KernelCompilationError,
     KernelNotFoundError,
     UnsupportedKernelError,
@@ -35,53 +33,15 @@ from cross_gpu.models import DeviceCapabilities
 
 
 class TestEmbedBinary(unittest.TestCase):
-    def test_pack_and_verify_roundtrip_in_temp_dir(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            kdir = tmp_path / "kernels"
-            (kdir / "cuda").mkdir(parents=True)
-            (kdir / "opencl").mkdir(parents=True)
-            (kdir / "cuda" / ".gitkeep").write_text("", encoding="utf-8")
-            (kdir / "cuda" / "README.md").write_text("docs", encoding="utf-8")
-            (kdir / "cuda" / "compute-fp32.cu").write_text(
-                'extern "C" __global__ void kernel_compute_fp32() {}',
-                encoding="utf-8",
-            )
-            (kdir / "opencl" / "compute-fp32.cl").write_text(
-                "__kernel void kernel_compute_fp32(void) {}",
-                encoding="utf-8",
-            )
-
-            target_py = tmp_path / "embed_copy.py"
-            target_py.write_text(
-                "# BEGIN EMBEDDED_KERNELS\nEMBEDDED_KERNELS = {}\n# END EMBEDDED_KERNELS\n",
-                encoding="utf-8",
-            )
-
-            packed = pack_kernels(kernels_dir=kdir, target_module_path=target_py)
-            self.assertEqual(sorted(packed.keys()), ["cuda:compute-fp32", "opencl:compute-fp32"])
-            self.assertEqual(verify_embedded_kernels(packed), [])
-
-            raw, meta = get_embedded_kernel("cuda", "compute-fp32", registry=packed)
-            self.assertIn(b"kernel_compute_fp32", raw)
-            self.assertEqual(meta["format"], "cuda_source")
-
-            # Corrupt SHA-256 and ensure verification catches it.
-            corrupt = dict(packed["cuda:compute-fp32"])
-            corrupt["sha256"] = "0" * 64
-            errors = verify_embedded_kernels({"cuda:compute-fp32": corrupt})
-            self.assertEqual(len(errors), 1)
-            with self.assertRaises(ValueError):
-                decode_payload(corrupt)
-
     def test_missing_kernel_raises_kernel_not_found(self) -> None:
-        with self.assertRaises(KernelNotFoundError):
-            get_embedded_kernel("cuda", "compute-fp32", registry={})
+        with self.assertRaises(KernelNotFoundError) as ctx_load:
+            load_kernel_source("cuda", "compute-fp32", specs={})
+        self.assertEqual(ctx_load.exception.exit_code, ExitCode.INIT_ERROR)
 
         with tempfile.TemporaryDirectory() as tmp:
             cache = RuntimeBinaryCache(Path(tmp))
             with self.assertRaises(KernelNotFoundError):
-                compile_kernel_runtime("cuda", "compute-fp32", "sm_89", cache=cache, registry={})
+                compile_kernel_runtime("cuda", "compute-fp32", "sm_89", cache=cache, specs={})
 
     def test_unsupported_capability_raises_unsupported_kernel_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -97,12 +57,15 @@ class TestEmbedBinary(unittest.TestCase):
                 )
 
     def test_cache_key_uniqueness_and_readonly_degradation(self) -> None:
-        k1 = compute_cache_key("cuda", "sm_89", "12.4", "compute-fp32", "abc", ("-O3",))
-        k2 = compute_cache_key("cuda", "sm_80", "12.4", "compute-fp32", "abc", ("-O3",))
-        k3 = compute_cache_key("cuda", "sm_89", "12.5", "compute-fp32", "abc", ("-O3",))
-        k4 = compute_cache_key("cuda", "sm_89", "12.4", "compute-fp32", "def", ("-O3",))
+        k1 = compute_memory_cache_key("cuda", "sm_89", "12.4", "compute-fp32", ("-O3",), b"abc")
+        k2 = compute_memory_cache_key("cuda", "sm_80", "12.4", "compute-fp32", ("-O3",), b"abc")
+        k3 = compute_memory_cache_key("cuda", "sm_89", "12.5", "compute-fp32", ("-O3",), b"abc")
+        k4 = compute_memory_cache_key("cuda", "sm_89", "12.4", "compute-fp32", ("-O3",), b"def")
         self.assertEqual(len({k1, k2, k3, k4}), 4)
-        self.assertEqual(len(k1), 64)
+
+        d1 = compute_disk_cache_name("cuda", "sm_89", "12.4", "compute-fp32", 100, ("-O3",))
+        d2 = compute_disk_cache_name("cuda", "sm_80", "12.4", "compute-fp32", 100, ("-O3",))
+        self.assertNotEqual(d1, d2)
 
         with tempfile.TemporaryDirectory() as tmp:
             cache = RuntimeBinaryCache(Path(tmp))
@@ -112,7 +75,6 @@ class TestEmbedBinary(unittest.TestCase):
                     "compute-fp32",
                     "gfx1100",
                     capabilities=DeviceCapabilities(fp32=True),
-                    source_override="__kernel void kernel_compute_fp32(void) {}",
                     cache=cache,
                 )
             self.assertEqual(compiled.format, "opencl_source")
@@ -122,7 +84,6 @@ class TestEmbedBinary(unittest.TestCase):
                 "compute-fp32",
                 "gfx1100",
                 capabilities=DeviceCapabilities(fp32=True),
-                source_override="__kernel void kernel_compute_fp32(void) {}",
                 cache=cache,
             )
             self.assertIs(compiled, cached)
@@ -197,22 +158,6 @@ class TestEmbedBinary(unittest.TestCase):
         )
         self.assertEqual(res_list.returncode, 0, res_list.stderr)
 
-    def test_encode_decode_helpers_and_empty_dir_scan(self) -> None:
-        b64, sha = encode_payload(b"hello")
-        raw = decode_payload(
-            {
-                "backend": "opencl",
-                "workload": "test",
-                "format": "opencl_source",
-                "sha256": sha,
-                "size_bytes": 5,
-                "zlib_b64": b64,
-            }
-        )
-        self.assertEqual(raw, b"hello")
-        with tempfile.TemporaryDirectory() as empty_dir:
-            self.assertEqual(scan_kernels_directory(Path(empty_dir)), {})
-
     def test_os_standard_cache_directories_and_sandbox_fallback(self) -> None:
         fake_home = Path("/fake/home")
 
@@ -265,15 +210,24 @@ class TestEmbedBinary(unittest.TestCase):
             with mock.patch.dict("os.environ", {}, clear=True):
                 mem_only = RuntimeBinaryCache()
                 self.assertIsNone(mem_only.cache_dir)
+                src = "__kernel void kernel_compute_fp32(void) {}"
                 compiled = compile_kernel_runtime(
                     "opencl",
                     "compute-fp32",
                     "arch",
                     capabilities=DeviceCapabilities(fp32=True),
-                    source_override="__kernel void kernel_compute_fp32(void) {}",
+                    source_override=src,
                     cache=mem_only,
                 )
-                self.assertIs(mem_only.get(compiled.cache_key), compiled)
+                compiled_again = compile_kernel_runtime(
+                    "opencl",
+                    "compute-fp32",
+                    "arch",
+                    capabilities=DeviceCapabilities(fp32=True),
+                    source_override=src,
+                    cache=mem_only,
+                )
+                self.assertIs(compiled, compiled_again)
 
 
 EXPECTED_BACKENDS: tuple[str, ...] = ("cuda", "hip", "levelzero", "metal", "opencl")
@@ -421,30 +375,27 @@ def ref_splitmix64(x: int) -> int:
     return (z ^ (z >> 31)) & m
 
 
-class TestPackedKernels(unittest.TestCase):
-    def test_all_90_kernels_packed_verified_and_in_sync_with_disk(self) -> None:
-        self.assertEqual(verify_embedded_kernels(EMBEDDED_KERNELS), [])
-        disk_packed = scan_kernels_directory()
-        self.assertEqual(len(EMBEDDED_KERNELS), 90)
-        self.assertEqual(EMBEDDED_KERNELS, disk_packed)
+class TestPackagedKernels(unittest.TestCase):
+    def test_all_90_kernels_load_via_importlib_resources(self) -> None:
+        self.assertEqual(verify_kernel_resources(), [])
+        self.assertEqual(len(KERNEL_SPECS), 90)
 
         for backend in EXPECTED_BACKENDS:
             for workload in EXPECTED_KERNEL_WORKLOADS:
-                key = f"{backend}:{workload}"
-                self.assertIn(key, EMBEDDED_KERNELS)
+                self.assertIn((backend, workload), KERNEL_SPECS)
                 # Both snake_case and hyphenated canonical names resolve cleanly.
-                raw_snake, meta_snake = get_embedded_kernel(backend, workload)
-                raw_dash, meta_dash = get_embedded_kernel(backend, workload.replace("_", "-"))
-                self.assertEqual(raw_snake, raw_dash)
-                self.assertEqual(meta_snake["sha256"], meta_dash["sha256"])
+                src_snake = load_kernel_source(backend, workload)
+                src_dash = load_kernel_source(backend, workload.replace("_", "-"))
+                self.assertEqual(src_snake.source_bytes, src_dash.source_bytes)
+                self.assertGreater(src_snake.size_bytes, 0)
 
     def test_kernel_entry_points_headers_and_unsupported_gates(self) -> None:
         for backend in EXPECTED_BACKENDS:
             for workload in EXPECTED_KERNEL_WORKLOADS:
-                raw, meta = get_embedded_kernel(backend, workload)
-                text = raw.decode("utf-8")
+                loaded = load_kernel_source(backend, workload)
+                text = loaded.source_text
                 expected_eps = default_entry_points(workload)
-                self.assertEqual(tuple(meta["entry_points"]), expected_eps)
+                self.assertEqual(loaded.entry_points, expected_eps)
                 self.assertIn("Entry point(s):", text)
                 self.assertTrue(
                     "OPS_PER_THREAD_PER_ITER:" in text or "BYTES_PER_ELEMENT:" in text,
@@ -678,8 +629,8 @@ class TestPackedKernels(unittest.TestCase):
 
                 # Explicitly unsupported Metal kernels must fail with UNSUPPORTED
                 for bad_wl in ("compute_fp64", "compute_fp8", "compute_fp4", "compute_int4", "compute_tensor_int8"):
-                    raw_src, _ = get_embedded_kernel("metal", bad_wl)
-                    compiled = compile_kernel_runtime("metal", bad_wl, dev.architecture, source_override=raw_src, cache=cache)
+                    loaded = load_kernel_source("metal", bad_wl)
+                    compiled = compile_kernel_runtime("metal", bad_wl, dev.architecture, source_override=loaded.source_bytes, cache=cache)
                     with self.assertRaises(KernelCompilationError) as err_ctx:
                         backend.load_module(ctx, compiled)
                     self.assertIn("UNSUPPORTED", err_ctx.exception.compiler_log)
