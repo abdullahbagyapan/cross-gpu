@@ -12,7 +12,13 @@ from unittest import mock
 
 from cross_gpu.models import GPUDevice, TelemetrySample
 from cross_gpu.telemetry import TelemetrySampler, read_telemetry
-from cross_gpu.telemetry.readers import parse_ioreg_output, read_linux_sysfs, read_nvml
+from cross_gpu.telemetry.readers import (
+    parse_ioreg_output,
+    read_linux_sysfs,
+    read_nvml,
+    sanitize_metrics_dict,
+    sanitize_sample,
+)
 
 
 SAMPLE_IOREG_APPLE = """+-o AGXAcceleratorG14G  <class AGXAcceleratorG14G, id 0x1000003e8, registered, matched, active, busy 0 (606 ms), retain 55>
@@ -171,6 +177,79 @@ class TestTelemetry(unittest.TestCase):
 
     def test_read_telemetry_router_handles_none(self) -> None:
         self.assertEqual(read_telemetry(None), TelemetrySample())
+
+    def test_sanitize_sample_rejects_bogus_and_preserves_valid_values(self) -> None:
+        bogus = TelemetrySample(
+            temperature_c=float("nan"),
+            power_w=-12.5,
+            gpu_util_pct=105.0,
+            mem_util_pct=-1.0,
+            core_clock_mhz=0,
+            mem_clock_mhz=-400,
+            fan_speed_pct=float("inf"),
+            fan_speed_rpm=-10,
+        )
+        self.assertEqual(sanitize_sample(bogus), TelemetrySample())
+        self.assertEqual(sanitize_sample(bogus).to_usable_dict(), {})
+
+        # Boundary checks: temp (-40, 200) exclusive, sentinel RPM rejected, valid 0 RPM kept.
+        for bad_temp in (-273.0, -40.0, 200.0, 999.0, float("-inf")):
+            self.assertIsNone(sanitize_sample(TelemetrySample(temperature_c=bad_temp)).temperature_c)
+        self.assertEqual(sanitize_sample(TelemetrySample(temperature_c=64.0)).temperature_c, 64.0)
+        self.assertEqual(sanitize_sample(TelemetrySample(power_w=0.0)).power_w, 0.0)
+        self.assertEqual(sanitize_sample(TelemetrySample(fan_speed_rpm=0)).fan_speed_rpm, 0)
+        self.assertIsNone(sanitize_sample(TelemetrySample(fan_speed_rpm=65535)).fan_speed_rpm)
+        self.assertEqual(
+            sanitize_metrics_dict({"temperature_c": 64.0, "power_w": -1.0, "core_clock_mhz": 0}),
+            {"temperature_c": 64.0},
+        )
+
+        # Readers sanitize sysfs and ioreg bogus/sentinel values automatically
+        with tempfile.TemporaryDirectory() as tmp:
+            drm = Path(tmp)
+            card0 = drm / "card0" / "device"
+            hwmon = card0 / "hwmon" / "hwmon0"
+            hwmon.mkdir(parents=True)
+            (card0 / "uevent").write_text("PCI_SLOT_NAME=0000:05:00.0\n", encoding="utf-8")
+            (card0 / "gpu_busy_percent").write_text("150\n", encoding="utf-8")
+            (card0 / "gt_cur_freq_mhz").write_text("0\n", encoding="utf-8")
+            (hwmon / "temp1_input").write_text("-273000\n", encoding="utf-8")
+            (hwmon / "power1_average").write_text("-5000000\n", encoding="utf-8")
+            (hwmon / "fan1_input").write_text("0\n", encoding="utf-8")
+            sample = read_linux_sysfs("0000:05:00.0", drm_root=drm)
+            self.assertIsNone(sample.temperature_c)
+            self.assertIsNone(sample.power_w)
+            self.assertIsNone(sample.gpu_util_pct)
+            self.assertIsNone(sample.core_clock_mhz)
+            self.assertEqual(sample.fan_speed_rpm, 0)
+
+        bad_ioreg = """+-o AGXAccelerator  <class AGXAccelerator, id 0x1000, registered>
+            {
+              "PerformanceStatistics" = {"Temperature(C)"=250,"GPU Power(W)"=-5,"Device Utilization %"=95,"Core Clock(MHz)"=0,"Fan Speed(RPM)"=0}
+            }
+        """
+        parsed = parse_ioreg_output(bad_ioreg, 0x1000)
+        self.assertIsNone(parsed.temperature_c)
+        self.assertIsNone(parsed.power_w)
+        self.assertIsNone(parsed.core_clock_mhz)
+        self.assertEqual(parsed.gpu_util_pct, 95.0)
+        self.assertEqual(parsed.fan_speed_rpm, 0)
+
+    def test_sampler_stops_promptly_without_waiting_full_1s_interval(self) -> None:
+        gpu = GPUDevice(index=0, name="Mock GPU", vendor="NVIDIA", pci_bdf="0000:01:00.0")
+        got_first = threading.Event()
+        sampler = TelemetrySampler(
+            gpu,
+            lambda _s, _e: got_first.set(),
+            interval_s=1.0,
+            reader_fn=lambda _d: TelemetrySample(temperature_c=55.0),
+        )
+        sampler.start()
+        self.assertTrue(got_first.wait(timeout=0.5))
+        t_stop = time.monotonic()
+        sampler.stop(timeout_s=1.0)
+        stop_elapsed = time.monotonic() - t_stop
+        self.assertLess(stop_elapsed, 0.25)
 
 
 if __name__ == "__main__":

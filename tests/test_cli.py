@@ -23,6 +23,7 @@ from cross_gpu.backends.base import (
 from cross_gpu.backends.registry import KNOWN_BACKENDS
 from cross_gpu.cli import (
     build_parser,
+    format_duration,
     format_progress_prefix,
     format_run_summary_text,
     format_telemetry_line,
@@ -132,16 +133,43 @@ def _sample_device() -> GPUDevice:
 
 class TestCLI(unittest.TestCase):
     def test_duration_parser(self) -> None:
+        self.assertAlmostEqual(parse_duration("1ms"), 0.001)
+        self.assertAlmostEqual(parse_duration("250ms"), 0.25)
+        self.assertAlmostEqual(parse_duration("500ms"), 0.5)
+        self.assertAlmostEqual(parse_duration("1500ms"), 1.5)
+        self.assertAlmostEqual(parse_duration("500MS"), 0.5)
         self.assertEqual(parse_duration("30s"), 30.0)
         self.assertEqual(parse_duration("5m"), 300.0)
         self.assertEqual(parse_duration("1h"), 3600.0)
         self.assertEqual(parse_duration("0.5m"), 30.0)
         self.assertEqual(parse_duration("0s", allow_zero=True), 0.0)
+        self.assertEqual(parse_duration("0ms", allow_zero=True), 0.0)
 
-        for bad in ("0s", "-5s", "60", "5d", "abc", "", "nans", "infs"):
+        for bad in ("0ms", "0s", "-5ms", "-100ms", "-5s", "ms", "10mms", "60", "5d", "abc", "", "nans", "infs"):
             with self.subTest(bad=bad):
                 with self.assertRaises(Exception):
                     parse_duration(bad, allow_zero=False)
+
+        # CLI-level rejection returns ExitCode.USAGE_ERROR (1)
+        for bad_argv in (
+            ["run", "--duration", "0ms"],
+            ["run", "--duration=-100ms"],
+            ["run", "--duration", "-100ms"],
+            ["run", "--duration", "ms"],
+            ["run", "--duration", "10mms"],
+        ):
+            out, err = io.StringIO(), io.StringIO()
+            try:
+                rc = main(bad_argv, stdout=out, stderr=err)
+            except SystemExit as exc:
+                rc = int(exc.code)
+            self.assertEqual(rc, ExitCode.USAGE_ERROR)
+            self.assertEqual(out.getvalue(), "")
+
+        # --warmup accepts 0ms and 250ms
+        parser = build_parser()
+        self.assertEqual(parse_duration(parser.parse_args(["run", "--warmup", "0ms"]).warmup, allow_zero=True), 0.0)
+        self.assertAlmostEqual(parse_duration(parser.parse_args(["run", "--warmup", "250ms"]).warmup, allow_zero=True), 0.25)
 
     def test_warmup_flag_edge_cases(self) -> None:
         parser = build_parser()
@@ -255,6 +283,173 @@ class TestCLI(unittest.TestCase):
         )
         for token in ("°C", "W", "%", "MHz", "RPM", "65.0°C", "200.0W", "2100MHz", "1900RPM"):
             self.assertIn(token, line)
+
+    def test_text_telemetry_line_omits_unusable_fields_and_suppresses_empty(self) -> None:
+        # Partial telemetry: only temp and GPU util usable -> never prints N/A or missing fields
+        partial_line = format_telemetry_line(
+            {
+                "elapsed_s": 5.0,
+                "device": 0,
+                "phase": "run",
+                "workload": "compute-fp32",
+                "workload_index": 1,
+                "workload_total": 4,
+                "phase_elapsed_s": 0.25,
+                "phase_duration_s": 0.5,
+                "metrics": {
+                    "temperature_c": 64.0,
+                    "power_w": None,
+                    "gpu_util_pct": 98.0,
+                    "mem_util_pct": None,
+                    "core_clock_mhz": 0,
+                    "mem_clock_mhz": None,
+                    "fan_speed_pct": None,
+                    "fan_speed_rpm": None,
+                },
+            }
+        )
+        self.assertIn("[01/04 compute-fp32 | 250ms/500ms]", partial_line)
+        self.assertIn("64.0°C | GPU 98%", partial_line)
+        self.assertNotIn("N/A", partial_line)
+        self.assertNotIn("W", partial_line)
+        self.assertNotIn("MHz", partial_line)
+        self.assertNotIn("Fan", partial_line)
+
+        # Zero-RPM fan-stop GPU preserves valid 0RPM without N/A
+        zero_rpm_line = format_telemetry_line(
+            {
+                "elapsed_s": 1.0,
+                "device": 0,
+                "phase": "run",
+                "workload": "compute-fp32",
+                "metrics": {"fan_speed_rpm": 0},
+            }
+        )
+        self.assertIn("Fan 0RPM", zero_rpm_line)
+        self.assertNotIn("N/A", zero_rpm_line)
+
+        # All 8 fields unusable/None -> returns empty string (suppressed)
+        empty_line = format_telemetry_line(
+            {
+                "elapsed_s": 1.0,
+                "device": 0,
+                "phase": "run",
+                "workload": "compute-fp32",
+                "metrics": {
+                    "temperature_c": None,
+                    "power_w": float("nan"),
+                    "gpu_util_pct": 150.0,
+                    "mem_util_pct": -1.0,
+                    "core_clock_mhz": 0,
+                    "mem_clock_mhz": -50,
+                    "fan_speed_pct": None,
+                    "fan_speed_rpm": -1,
+                },
+            }
+        )
+        self.assertEqual(empty_line, "")
+
+    def test_subsecond_duration_and_progress_formatting(self) -> None:
+        self.assertEqual(format_duration(0.001), "1ms")
+        self.assertEqual(format_duration(0.25), "250ms")
+        self.assertEqual(format_duration(0.5), "500ms")
+        self.assertEqual(format_duration(1.0), "1s")
+        self.assertEqual(format_duration(1.5), "1.5s")
+        self.assertEqual(format_duration(60.0), "60s")
+
+        self.assertEqual(
+            format_progress_prefix(
+                "compute-fp32",
+                workload_index=1,
+                workload_total=4,
+                phase="warmup",
+                phase_elapsed_s=0.25,
+                phase_duration_s=0.5,
+            ),
+            "[01/04 compute-fp32 | warmup 250ms/500ms]",
+        )
+        self.assertEqual(
+            format_progress_prefix(
+                "compute-fp32",
+                workload_index=1,
+                workload_total=4,
+                phase="run",
+                phase_elapsed_s=0.25,
+                phase_duration_s=0.5,
+            ),
+            "[01/04 compute-fp32 | 250ms/500ms]",
+        )
+
+    def test_cli_json_and_text_suppress_empty_telemetry_ticks(self) -> None:
+        dev = _sample_device()
+
+        class _FakeRunner:
+            def __init__(self, *, event_callback=None, **kwargs):
+                self._cb = event_callback
+
+            def run(self):
+                from cross_gpu.runner import RunReport
+
+                # Empty/unusable tick -> must be suppressed in BOTH text and json
+                self._cb(
+                    {
+                        "type": "telemetry",
+                        "elapsed_s": 0.1,
+                        "device": 0,
+                        "phase": "run",
+                        "workload": "compute-fp32",
+                        "metrics": {"temperature_c": None, "core_clock_mhz": 0},
+                    }
+                )
+                # Partial usable tick -> only non-null keys emitted
+                self._cb(
+                    {
+                        "type": "telemetry",
+                        "elapsed_s": 0.2,
+                        "device": 0,
+                        "phase": "run",
+                        "workload": "compute-fp32",
+                        "workload_index": 1,
+                        "workload_total": 1,
+                        "phase_elapsed_s": 0.2,
+                        "phase_duration_s": 0.5,
+                        "metrics": {"temperature_c": 64.0, "power_w": None, "gpu_util_pct": 98.0},
+                    }
+                )
+                res = WorkloadResult(
+                    0, "NVIDIA RTX 4090", "cuda", "compute-fp32", "compute-fp",
+                    "pass", 0.5, 100.0, "GFLOP/s", 50.0, "GFLOP", 0, "", "", ExitCode.SUCCESS,
+                )
+                self._cb({"type": "workload_result", "workload_index": 1, "workload_total": 1, "target_duration_s": 0.5, **res.to_dict()})
+                self._cb({"type": "run_summary", "exit_code": 0, "total_workloads": 1, "results": [res.to_dict()]})
+                return RunReport(exit_code=ExitCode.SUCCESS, results=[res])
+
+        out_json, err_json = io.StringIO(), io.StringIO()
+        rc_json = main(
+            ["run", "--device", "0", "--test", "compute-fp32", "--duration", "500ms", "--json"],
+            stdout=out_json,
+            stderr=err_json,
+            discover_fn=lambda: ([dev], {"cuda": _FaultyHardwarePlugin()}),
+            runner_factory=_FakeRunner,
+        )
+        self.assertEqual(rc_json, ExitCode.SUCCESS)
+        objs = [json.loads(line) for line in out_json.getvalue().strip().splitlines()]
+        telem_objs = [o for o in objs if o["type"] == "telemetry"]
+        self.assertEqual(len(telem_objs), 1)
+        self.assertEqual(telem_objs[0]["metrics"], {"temperature_c": 64.0, "gpu_util_pct": 98.0})
+        self.assertNotIn("power_w", telem_objs[0]["metrics"])
+
+        out_text, err_text = io.StringIO(), io.StringIO()
+        rc_text = main(
+            ["run", "--device", "0", "--test", "compute-fp32", "--duration", "500ms"],
+            stdout=out_text,
+            stderr=err_text,
+            discover_fn=lambda: ([dev], {"cuda": _FaultyHardwarePlugin()}),
+            runner_factory=_FakeRunner,
+        )
+        self.assertEqual(rc_text, ExitCode.SUCCESS)
+        self.assertNotIn("N/A", out_text.getvalue())
+        self.assertIn("[01/01 compute-fp32 | 200ms/500ms] dev=0 | 64.0°C | GPU 98%", out_text.getvalue())
 
     def test_subprocess_entry_points(self) -> None:
         repo_root = Path(__file__).resolve().parent.parent
@@ -601,6 +796,8 @@ class TestCLI(unittest.TestCase):
                 self.assertIn(cmd, content, f"Missing subcommand {cmd!r} in {comp_path.name}")
             for flag in expected_long_flags:
                 self.assertIn(flag, content, f"Missing flag {flag!r} in {comp_path.name}")
+            for ms_tok in ("250ms", "500ms"):
+                self.assertIn(ms_tok, content, f"Missing ms duration {ms_tok!r} in {comp_path.name}")
 
 
 if __name__ == "__main__":

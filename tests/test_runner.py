@@ -279,6 +279,93 @@ class TestRunner(unittest.TestCase):
         ).run()
         self.assertEqual(r2.exit_code, ExitCode.INIT_ERROR)
 
+    def test_short_200ms_run_terminates_promptly_and_filters_empty_telemetry(self) -> None:
+        import time as _time
+        from cross_gpu.workloads.common import calibrate_iterations
+
+        # Sub-second calibration caps target below duration_s to avoid overshoot
+        mock_clock = {"t": 0.0}
+
+        def fake_launch(n: int) -> None:
+            mock_clock["t"] += 0.002 * n
+
+        iters_200ms = calibrate_iterations(
+            fake_launch,
+            lambda: None,
+            max_duration_s=0.2,
+            clock_fn=lambda: mock_clock["t"],
+        )
+        # 20% of 200ms = 40ms -> 40ms / 2ms = 20 iters (strictly below 1s default of 50 iters)
+        self.assertEqual(iters_200ms, 20)
+
+        reg = _fresh_registry()
+        seen_target_durations: list[float] = []
+
+        class _QuickExecutor(WorkloadExecutor):
+            requires_kernel = False
+
+            def prepare(self, ctx: WorkloadExecutionContext, binary: object) -> None:
+                seen_target_durations.append(float(ctx.state["target_duration_s"]))
+
+            def run_step(self, ctx: WorkloadExecutionContext) -> StepMetrics:
+                _time.sleep(0.02)
+                return StepMetrics(operations=100_000_000.0)
+
+            def verify(self, ctx: WorkloadExecutionContext) -> VerificationResult:
+                return VerificationResult(passed=True, error_count=0)
+
+            def cleanup(self, ctx: WorkloadExecutionContext) -> None:
+                pass
+
+        register_workload_executor("bandwidth-h2d", _QuickExecutor, registry=reg)
+        backend = _StubBackend()
+        gpu = _make_gpu(0)
+
+        # Case 1: All 8 telemetry fields unusable -> zero telemetry events emitted, prompt finish (< 0.6s)
+        events_empty: list[dict[str, object]] = []
+        t0 = _time.monotonic()
+        report = StressRunner(
+            devices=[gpu],
+            plugins={"stub": backend},
+            tests=["bandwidth-h2d"],
+            duration_s=0.2,
+            telemetry_interval_s=1.0,
+            registry=reg,
+            event_callback=events_empty.append,
+            telemetry_reader=lambda _d: TelemetrySample(
+                temperature_c=float("nan"),
+                power_w=-1.0,
+                core_clock_mhz=0,
+            ),
+        ).run()
+        wall_s = _time.monotonic() - t0
+        self.assertEqual(report.exit_code, ExitCode.SUCCESS)
+        self.assertAlmostEqual(seen_target_durations[0], 0.2)
+        self.assertLess(wall_s, 0.6)
+        self.assertEqual([e for e in events_empty if e["type"] == "telemetry"], [])
+
+        # Case 2: Mixed usable + unusable metrics -> only usable keys appear in telemetry event
+        events_partial: list[dict[str, object]] = []
+        StressRunner(
+            devices=[gpu],
+            plugins={"stub": backend},
+            tests=["bandwidth-h2d"],
+            duration_s=0.1,
+            telemetry_interval_s=0.05,
+            registry=reg,
+            event_callback=events_partial.append,
+            telemetry_reader=lambda _d: TelemetrySample(
+                temperature_c=64.0,
+                power_w=-5.0,
+                gpu_util_pct=98.0,
+                core_clock_mhz=0,
+            ),
+        ).run()
+        telem_events = [e for e in events_partial if e["type"] == "telemetry"]
+        self.assertGreaterEqual(len(telem_events), 1)
+        for ev in telem_events:
+            self.assertEqual(ev["metrics"], {"temperature_c": 64.0, "gpu_util_pct": 98.0})
+
 
 if __name__ == "__main__":
     unittest.main()
