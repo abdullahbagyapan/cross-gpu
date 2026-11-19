@@ -1,91 +1,125 @@
 # `cross-gpu` Architecture
 
-`cross-gpu` is a cross-platform GPU discovery, stress-testing, and telemetry CLI targeting **Linux** and **macOS**, built exclusively with the **Python 3.10+ standard library** and **zero external runtime dependencies**.
+`cross-gpu` is a cross-platform GPU discovery, hardware telemetry, and stress-testing CLI targeting **Linux** (`x86_64`, `aarch64`) and **macOS** (`arm64`, `x86_64`), written exclusively with the **Python 3.10+ standard library** and **zero external Python dependencies**.
 
 ---
 
-## 1. Package Layout
+## 1. High-Level System Flow
 
-| Module / Directory | Responsibility |
+```text
+                       cross-gpu CLI (cross_gpu/cli.py)
+               [list | info | run]  stdout=data  stderr=diagnostics
+                                     |
+          +--------------------------+--------------------------+
+          v                                                     v
+backends/registry.py                                  workloads/registry.py
+  probe 5 ctypes plugins                               20 WorkloadSpec entries
+  (cuda, hip, levelzero, metal, opencl)                20 WorkloadExecutor impls
+          |                                                     |
+          v                                                     |
+       dedup.py                                                 |
+  3-tier physical GPU merge                                     |
+  priority: native (100) > opencl (50)                          |
+          |                                                     |
+          +--------------------------+--------------------------+
+                                     v
+                         runner.py (StressRunner)
+               multi-GPU worker threads + SIGINT/SIGTERM trap
+                      |                               |
+                      v                               v
+               embed_binary.py                   telemetry/
+       importlib.resources raw loader        1 Hz TelemetrySampler
+       runtime compilers (NVRTC/hipRTC/      (NVML, Linux DRM/hwmon,
+        clang+llvm-spirv/ocloc/xcrun)         macOS ioreg) + sanitizer
+       plain-tuple memory + XDG disk cache
+```
+
+---
+
+## 2. Package Layout
+
+| Path | Responsibility |
 |---|---|
-| `cross_gpu/cli.py`, `cross_gpu/__main__.py` | Argument and duration parsing, `list`/`info`/`run` subcommands, text & JSON/NDJSON formatters |
-| `cross_gpu/models.py` | Frozen/structured dataclasses for `DeviceCapabilities`, `DeviceInfo`, `TelemetrySample`, and run results |
-| `cross_gpu/exit_codes.py` | Severity-ordered `ExitCode` (`0..4`), domain exceptions, and `aggregate_exit_codes` (`max`) |
-| `cross_gpu/backends/` | 5 native `ctypes` plugins (`cuda`, `hip`, `levelzero`, `metal`, `opencl`) and backend registry |
-| `cross_gpu/dedup.py` | Backend priority weighting and cross-backend physical GPU deduplication |
-| `cross_gpu/kernels/` | Raw native GPU stress kernel source files (`18` compilation units × `5` backends = `90` files) |
-| `cross_gpu/embed_binary.py` | `importlib.resources` raw kernel loader, registry verifier CLI, runtime compilers, and compile cache |
-| `cross_gpu/workloads/` | Metadata registry, golden verification math, safe VRAM sizing, calibration, and 20 `WorkloadExecutor` classes |
-| `cross_gpu/runner.py` | Multi-GPU execution lifecycle, warmup exclusion, verification checkpoints, signal handling, and reporting |
-| `cross_gpu/telemetry/` | 1 Hz drift-compensated background telemetry sampler (NVML, Linux DRM/hwmon `sysfs`, macOS `ioreg`) |
+| `cross_gpu/cli.py`, `cross_gpu/__main__.py` | `DeterministicArgumentParser`, `ms`/`s`/`m`/`h` duration parser, `difflib` typo hints, `text`/JSON/NDJSON formatters, `-v`/`--verbose` logger, strict `stdout`/`stderr` routing |
+| `cross_gpu/models.py` | Dataclasses for `DeviceCapabilities`, `BackendDeviceInfo`, `BackendBinding`, `GPUDevice`, `TelemetrySample`, `StepMetrics`, `VerificationResult`, and `WorkloadResult` |
+| `cross_gpu/exit_codes.py` | Severity-ordered `ExitCode` (`0..4`), typed exceptions, and `aggregate_exit_codes` (`max`) |
+| `cross_gpu/backends/` | `BackendPlugin` ABC + `ctypes` ABI helpers (`base.py`), plugin discovery (`registry.py`), and 5 native plugins (`cuda`, `hip`, `levelzero`, `metal`, `opencl`) |
+| `cross_gpu/dedup.py` | Backend priority ordering and 3-tier physical GPU deduplication |
+| `cross_gpu/kernels/` | 90 raw standalone native GPU stress kernels (`18` compilation units × `5` backends) bundled as package data |
+| `cross_gpu/embed_binary.py` | `importlib.resources` raw kernel loader, `verify`/`list` CLI, 5 runtime compiler adapters, and 2-tier compile cache |
+| `cross_gpu/workloads/` | 20-workload registry, golden verification math, safe VRAM sizing, dynamic batch calibration, and 20 concrete `WorkloadExecutor` classes |
+| `cross_gpu/runner.py` | Multi-GPU execution coordinator, warmup exclusion, periodic verification checkpoints, and signal-safe cleanup |
+| `cross_gpu/telemetry/` | 1 Hz drift-compensated `TelemetrySampler` (`__init__.py`) and platform readers + sensor sanitization (`readers.py`) |
 
 ---
 
-## 2. Native Backends & Physical GPU Deduplication
+## 3. Zero-Dependency `ctypes` Strategy
 
-- Every backend binds directly to native shared libraries or macOS frameworks using `ctypes` with explicit `argtypes`/`restype` declarations:
-  - **CUDA** (`libcuda.so.1`, priority `100`)
-  - **HIP** (`libamdhip64.so`, priority `100`)
-  - **oneAPI Level Zero** (`libze_loader.so.1`, priority `100`)
-  - **Apple Metal** (`libobjc.A.dylib` + `Metal.framework`, priority `100`)
-  - **OpenCL** (`libOpenCL.so.1` / `OpenCL.framework`, priority `50`)
-- `cross_gpu/dedup.py` merges duplicate backend handles representing the same physical GPU using normalized PCIe BDF (`DDDD:BB:DD.F`), hardware UUID / macOS IOKit `registryID`, and fallback device fingerprints.
-- In `--backend auto` mode, each deduplicated GPU uses its highest-priority native backend (`100`) over OpenCL (`50`).
+- **Versioned SONAMEs & Standard Frameworks:** Shared libraries are resolved dynamically via `ctypes.CDLL` using standard versioned SONAMEs (`libcuda.so.1`, `libnvrtc.so.12`, `libamdhip64.so.6`, `libhiprtc.so.6`, `libze_loader.so.1`, `libOpenCL.so.1`, `libnvidia-ml.so.1`) and standard macOS paths (`/usr/lib/libobjc.A.dylib`, `/System/Library/Frameworks/Metal.framework/Metal`, `/System/Library/Frameworks/OpenCL.framework/OpenCL`). No hardcoded distro library paths are used on Linux, so `LD_LIBRARY_PATH` and `DYLD_LIBRARY_PATH` work naturally.
+- **Explicit `argtypes` / `restype` ABI Safety:** Every C symbol is bound via `bind_c_symbol` or `bind_optional_c_symbol` (and `_bind_objc_msg` with `ctypes.CFUNCTYPE` for Objective-C `objc_msgSend` on Apple Silicon `arm64` and Intel `x86_64`). Explicit pointer widths (`c_void_p`, `c_size_t`, `c_uint64`, `c_int32`) prevent 64-bit pointer truncation and variadic calling-convention mismatches across `x86_64` and `arm64`.
+- **Isolated Plugin Failure Handling:** `enumerate_all_backend_devices_with_diagnostics()` probes every plugin independently inside guarded `try`/`except` blocks. A missing runtime library, failed driver init, or Linux `/dev/dri/renderD*` / `/dev/kfd` permission error records a concise diagnostic reason (`backend -> reason`) without impacting healthy plugins.
 
 ---
 
-## 3. Raw Kernel Loading (`importlib.resources`) & Runtime Compilation
+## 4. Backend Priority & 3-Tier Physical GPU Deduplication
 
-### Single-Source-of-Truth Kernel Resources
+When a GPU is exposed by multiple runtimes (for example, CUDA + OpenCL on NVIDIA, HIP + OpenCL on AMD, Level Zero + OpenCL on Intel, or Metal + OpenCL on Apple Silicon), `cross_gpu/dedup.py` merges them into a single canonical `GPUDevice`:
 
-- Raw kernel source files under `cross_gpu/kernels/{cuda,hip,levelzero,metal,opencl}/` are bundled directly as package data in `pyproject.toml` and loaded at runtime using Python's standard library:
+1. **Priority Weighting:**
+   - Native backends (`cuda`, `hip`, `levelzero`, `metal`): `priority = 100`
+   - Cross-vendor fallback (`opencl`): `priority = 50`
+   - Inputs are sorted descending by `(-priority, backend, backend_device_index)` so the highest-priority native backend becomes the primary binding (`active_backend`) while lower-priority backends remain selectable via `--backend <name>`.
+2. **3-Tier Physical Identity Hierarchy:**
+   - **Tier 1 — Normalized PCIe BDF:** Canonicalized lowercase `DDDD:BB:DD.F` (e.g., `0000:01:00.0`). Strongest match on Linux PCIe GPUs.
+   - **Tier 2 — Hardware UUID / macOS IOKit `registryID`:** Normalized lowercase 32-hex-digit hyphenated UUID (`GPU-` prefix stripped, all-zero UUIDs rejected) or 64-bit IOKit `registryID`.
+   - **Tier 3 — Ordinal Fallback Hardware Fingerprint:** `(canonical_vendor, normalized_device_name, memory_bucket)` used only when a backend already present in the group is not duplicated, neither side has conflicting strong IDs, and at least one side lacks the strong ID present on the other (for example, merging macOS Metal `registryID` with macOS OpenCL on Apple Silicon).
+3. **Metadata Backfill:** Missing secondary attributes (e.g., `free_memory_bytes`, `compute_units`, `pci_bdf`, `uuid`) on the primary descriptor are backfilled from lower-priority bindings without downgrading native capabilities.
+
+---
+
+## 5. `embed_binary.py` Raw Kernel & Runtime Compilation Lifecycle
+
+### Single-Source-of-Truth Kernel Loading (`importlib.resources`)
+
+- Raw kernel source files under `cross_gpu/kernels/{cuda,hip,levelzero,metal,opencl}/` are bundled directly as package data in `pyproject.toml` and loaded via Python's standard library:
 
   ```python
   resource = importlib.resources.files("cross_gpu").joinpath("kernels", backend, filename)
   source_bytes = resource.read_bytes()
   ```
 
-- `cross_gpu/embed_binary.py` maintains a lightweight `KERNEL_SPECS` metadata catalog mapping `(backend, workload)` to `filename`, `format`, `entry_point`, and `entry_points`—without duplicating kernel source text into Python modules or storing opaque binary blobs.
-- `load_kernel_source(backend, workload)` decodes each file as strict UTF-8 and memoizes the `KernelSource` in memory (`clear_kernel_source_cache()` clears the memoization table for tests).
-- Missing specs, missing resource files, or invalid UTF-8 raise `KernelNotFoundError`, which maps directly to `ExitCode.INIT_ERROR (2)`.
-- `python3 -m cross_gpu.embed_binary verify` checks that every registered kernel resolves via `importlib.resources`, is non-empty valid UTF-8, declares every expected entry point symbol, and has no orphan files under `cross_gpu/kernels/`.
+- `KERNEL_SPECS` stores lightweight metadata (`backend`, `workload`, `filename`, `format`, `entry_point`, `entry_points`) for all 90 compilation units—with **no** duplicated source blobs or digest hashes inside Python source files.
+- `load_kernel_source(backend, workload)` decodes each kernel as strict UTF-8 and memoizes the `KernelSource` in memory (`clear_kernel_source_cache()` resets the cache in tests). Missing specs, missing resource files, or invalid UTF-8 raise `KernelNotFoundError` (`ExitCode.INIT_ERROR = 2`).
+- `python3 -m cross_gpu.embed_binary verify` validates every registered resource resolves cleanly, is non-empty UTF-8, declares every expected entry-point symbol, and detects orphan files under `cross_gpu/kernels/`.
 
-### Runtime Compilation Pipelines
+### Per-Backend Runtime Compilation Flows
 
-`compile_kernel_runtime(...)` validates device capability flags before compilation (raising `UnsupportedKernelError` when a GPU lacks native support) and dispatches to the backend compiler pipeline:
+Before compilation, `compile_kernel_runtime(...)` checks `DeviceCapabilities` (raising `UnsupportedKernelError` immediately if unsupported) and prepends `-DCROSS_GPU_HAS_<CAP>=<0|1>` capability macros:
 
-| Backend | Compiler Pipeline | Output Format |
+| Backend | Runtime Compiler Pipeline | Artifact Format |
 |---|---|---|
-| `cuda` | `libnvrtc` (`ctypes`) | `cubin` (when `sm_*` supported) or `ptx` |
-| `hip` | `libhiprtc` (`ctypes`) | `hsaco` |
-| `levelzero` | `clang` + `llvm-spirv` or `ocloc` | `spirv` |
-| `metal` | `xcrun -sdk macosx metal` + `metallib` (or MSL passthrough) | `metallib` or `msl_source` |
-| `opencl` | Source passthrough + `CL_PROGRAM_BINARIES` extract/reload helpers | `opencl_source` / `opencl_binary` |
+| `cuda` | `libnvrtc` (`ctypes`) with `--gpu-architecture=sm_XY` / `compute_XY` | `cubin` (when `nvrtcGetCUBIN` available for `sm_*`) or `ptx` |
+| `hip` | `libhiprtc` (`ctypes`) with `--offload-arch=gfx...` | `hsaco` |
+| `levelzero` | `clang -cc1 -triple spir64-unknown-unknown` + `llvm-spirv`, or `ocloc compile -spirv_only` | `spirv` |
+| `metal` | `xcrun -sdk macosx metal` + `metallib`, falling back cleanly to MSL source passthrough when Xcode Metal CLI utilities are unavailable | `metallib` or `msl_source` |
+| `opencl` | Source passthrough (`clBuildProgram`), plus `CL_PROGRAM_BINARIES` extract/reload helpers (`clCreateProgramWithBinary`) | `opencl_source` / `opencl_binary` |
 
-### Plain Tuple & Metadata-Validated Caching
+### 2-Tier Plain Tuple & Metadata-Validated Cache
 
-`RuntimeBinaryCache` uses two cache tiers with plain Python keys and structured metadata:
-
-1. **In-memory cache:** Keyed directly on the plain tuple:
+1. **In-Memory Cache:** Keyed directly on the plain Python tuple:
    `(backend, target_arch, driver_version, workload, tuple(canonical_compile_flags), source_bytes)`.
-2. **Optional disk cache:** Persists compiled `.bin` artifacts alongside a `.json` metadata sidecar under OS-standard cache directories:
-   - Linux / POSIX: `$XDG_CACHE_HOME/cross-gpu` (if absolute), fallback `~/.cache/cross-gpu`
-   - macOS: `~/Library/Caches/cross-gpu`
-   - Override on any platform: `$CROSS_GPU_CACHE_DIR`
-   - Filenames are deterministic, sanitized, human-readable stems containing package `__version__`, `backend`, `workload`, `target_arch`, `driver_version`, source `size_bytes`, and sanitized/compacted compile flags (staying well within POSIX `NAME_MAX`).
-   - Disk reads validate `.bin` byte length and `.json` metadata fields (`package_version`, `backend`, `workload`, `target_arch`, `driver_version`, `source_size_bytes`, `input_compile_flags`).
-   - Ad-hoc `source_override` compiles bypass the disk cache completely and stay strictly in memory.
-   - If the cache directory is unavailable or read-only, `RuntimeBinaryCache` degrades cleanly to in-memory-only caching without raising.
+2. **Optional Disk Cache:** Stores `.bin` artifacts alongside a `.json` metadata sidecar under:
+   - `CROSS_GPU_NO_CACHE=1|true|yes`: disk cache completely bypassed (in-memory only).
+   - `$CROSS_GPU_CACHE_DIR`: explicit path override.
+   - `$XDG_CACHE_HOME/cross-gpu`: honored when set to an absolute path on both Linux and macOS.
+   - Defaults: `~/.cache/cross-gpu` (Linux/POSIX), `~/Library/Caches/cross-gpu` (macOS).
+   - Filename stems are deterministic, sanitized, `NAME_MAX`-safe human-readable keys encoding `__version__`, `backend`, `workload`, `target_arch`, `driver_version`, `size_bytes`, and compacted/sanitized compile flags.
+   - Disk hits verify `.bin` byte size and exact `.json` metadata (`package_version`, `backend`, `workload`, `target_arch`, `driver_version`, `source_size_bytes`, `input_compile_flags`). Ad-hoc `source_override` compiles bypass disk caching completely; read-only or unavailable cache paths degrade cleanly to in-memory-only caching.
 
 ---
 
-## 4. Execution Lifecycle, Telemetry & Exit Codes
+## 6. Concurrency, Signals & Clean Resource Teardown
 
-- **Workloads (`cross_gpu/workloads/`):** All 20 workloads calibrate batch size during `prepare()` to target `~100 ms` per dispatch (`50–200 ms` watchdog-safe window), run optional excluded warmup, execute timed steps with periodic golden verification, and clean up device/host buffers in `finally` blocks. See [workloads.md](workloads.md) for per-workload accounting formulas.
-- **Telemetry (`cross_gpu/telemetry/`):** A drift-compensated 1 Hz sampler reads temperature, power, clocks, utilization, and VRAM usage via NVML (`libnvidia-ml.so.1`), Linux DRM/hwmon `sysfs`, or unprivileged macOS `ioreg`.
-- **Exit codes (`cross_gpu/exit_codes.py`):** Aggregated across all targeted devices and workloads using `max(codes)`:
-  - `0` (`SUCCESS`)
-  - `1` (`USAGE_ERROR`)
-  - `2` (`INIT_ERROR`)
-  - `3` (`COMPUTE_ERROR`)
-  - `4` (`HARDWARE_ERROR`)
+- **Multi-GPU Execution:** When targeting multiple GPUs (`--device all`), `StressRunner.run()` spawns one worker thread per physical GPU so all devices stress concurrently, synchronizing event emission through a shared lock (`_emit_lock`).
+- **Signal Handling (`SIGINT` / `SIGTERM`):** When invoked on the main thread, `StressRunner` installs signal handlers that set a shared `threading.Event` (`_stop_event`) and restores previous handlers in a `finally` block. Worker loops check `_stop_event` between calibrated dispatches (`50–200 ms`, or shorter for sub-second `--duration`), stop `TelemetrySampler` immediately via `Event.wait()`, and exit promptly.
+- **Deterministic Teardown:** Every `WorkloadExecutor` releases device buffers, pinned host buffers, and loaded kernel modules inside idempotent `cleanup()` called from a `finally` block; every device worker stops its `TelemetrySampler` and calls `plugin.destroy_context(backend_ctx)` inside its outer `finally` block, even after compute errors, hardware faults, or signals.
