@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """Runtime kernel loader (via importlib.resources), verifier CLI, and compiler adapters."""
 
 from __future__ import annotations

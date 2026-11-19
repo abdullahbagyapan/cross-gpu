@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """Core domain dataclasses for devices, telemetry, and workload results."""
 
 from __future__ import annotations

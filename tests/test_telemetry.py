@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """Unit tests for NVML/sysfs/IOKit telemetry readers and 1 Hz sampler cadence."""
 
 from __future__ import annotations

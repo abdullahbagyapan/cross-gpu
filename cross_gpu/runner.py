@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """Multi-GPU stress-testing orchestrator with warmup/run phases, signals, and telemetry."""
 
 from __future__ import annotations

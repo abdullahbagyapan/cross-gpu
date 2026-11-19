@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """Memory pattern, full-capacity sweep, and bandwidth workload executors (Group 4)."""
 
 from __future__ import annotations

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """Scalar integer (Group 1) and scalar floating-point / ML (Group 2) workload executors."""
 
 from __future__ import annotations

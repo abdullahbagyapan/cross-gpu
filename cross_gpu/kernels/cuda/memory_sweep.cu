@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 /*
  * cross-gpu kernel: memory_sweep (cuda)
  * Entry point(s): kernel_memory_sweep_write, kernel_memory_sweep_verify

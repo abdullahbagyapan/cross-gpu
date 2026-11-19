@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """Hardware matrix / tensor core workload executors (Group 3)."""
 
 from __future__ import annotations

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """Offline unit, calibration, VRAM sizing, and fault-injection tests for all 20 workloads."""
 
 from __future__ import annotations

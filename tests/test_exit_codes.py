@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """Unit tests for deterministic ExitCode ordering, aggregation, and error mapping."""
 
 from __future__ import annotations

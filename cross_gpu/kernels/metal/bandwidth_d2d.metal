@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 /*
  * cross-gpu kernel: bandwidth_d2d (metal)
  * Entry point(s): kernel_bandwidth_d2d

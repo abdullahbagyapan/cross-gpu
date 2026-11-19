@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 PYTHON ?= python3
 PREFIX ?= /usr/local
 DESTDIR ?=

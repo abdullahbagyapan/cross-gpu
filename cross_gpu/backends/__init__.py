@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """Native ctypes GPU backend plugins and discovery registry."""
 
 from __future__ import annotations

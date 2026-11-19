@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """Opt-in hardware-in-the-loop GPU stress smoke tests (enable via CROSS_GPU_HW_TESTS=1)."""
 
 from __future__ import annotations

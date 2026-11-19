@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """Deterministic exit codes and typed exception hierarchy for cross-gpu."""
 
 from __future__ import annotations

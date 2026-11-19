@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 /*
  * cross-gpu kernel: memory_pattern (metal)
  * Entry point(s): kernel_memory_pattern_write, kernel_memory_pattern_verify

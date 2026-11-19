@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """Unit tests for CLI argument parsing, --warmup edge cases, JSON/NDJSON, and exit code 4."""
 
 from __future__ import annotations

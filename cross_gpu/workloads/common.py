@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """Shared workload helpers: geometry, calibration, safe VRAM sizing, and golden verification."""
 
 from __future__ import annotations

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 /*
  * cross-gpu kernel: compute_int32 (levelzero)
  * Entry point(s): kernel_compute_int32

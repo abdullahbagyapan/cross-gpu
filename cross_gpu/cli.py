@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """CLI argument parser, duration parser, text/JSON/NDJSON formatters, and dispatcher."""
 
 from __future__ import annotations

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """Dynamic discovery, priority sorting, and isolated enumeration of backend plugins."""
 
 from __future__ import annotations

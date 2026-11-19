@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 # Bash completion for cross-gpu
 
 _cross_gpu_completions() {

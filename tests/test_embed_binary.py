@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """Unit tests for importlib.resources kernel loading, verification, caching, and runtime compilation."""
 
 from __future__ import annotations

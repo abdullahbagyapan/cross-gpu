@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """Canonical 20-workload metadata registry and WorkloadExecutor interface."""
 
 from __future__ import annotations

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """1 Hz drift-compensated telemetry sampler and platform reader router."""
 
 from __future__ import annotations

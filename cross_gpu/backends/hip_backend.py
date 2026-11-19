@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """AMD HIP runtime API (libamdhip64.so) backend plugin via ctypes."""
 
 from __future__ import annotations

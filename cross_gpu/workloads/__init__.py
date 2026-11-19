@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """Cross-platform GPU stress workload registry, helpers, and concrete executors."""
 
 from __future__ import annotations

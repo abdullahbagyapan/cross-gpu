@@ -1,4 +1,5 @@
 #compdef cross-gpu
+# SPDX-License-Identifier: MIT
 
 _cross_gpu() {
     local context state state_descr line

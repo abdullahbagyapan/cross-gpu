@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """Apple Metal (libobjc + Metal.framework) backend plugin via ctypes."""
 
 from __future__ import annotations

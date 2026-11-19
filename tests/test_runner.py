@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """Unit tests for StressRunner orchestration, warmup exclusion, units, and faults."""
 
 from __future__ import annotations

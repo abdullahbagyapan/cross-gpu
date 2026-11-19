@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """Abstract backend plugin interface, ctypes ABI helpers, and buffer handles."""
 
 from __future__ import annotations

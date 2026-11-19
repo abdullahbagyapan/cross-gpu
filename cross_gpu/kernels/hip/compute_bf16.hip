@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 /*
  * cross-gpu kernel: compute_bf16 (hip)
  * Entry point(s): kernel_compute_bf16

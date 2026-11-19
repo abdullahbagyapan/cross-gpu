@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 /*
  * cross-gpu kernel: compute_fp4 (metal)
  * Entry point(s): kernel_compute_fp4

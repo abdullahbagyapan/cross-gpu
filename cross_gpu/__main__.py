@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """Module execution entry point for `python3 -m cross_gpu`."""
 
 from __future__ import annotations

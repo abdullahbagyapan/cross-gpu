@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """Platform telemetry readers: NVML (ctypes), Linux DRM/hwmon sysfs, and macOS ioreg."""
 
 from __future__ import annotations

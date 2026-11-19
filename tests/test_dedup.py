@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """Unit tests for cross-backend physical GPU deduplication and priority resolution."""
 
 from __future__ import annotations

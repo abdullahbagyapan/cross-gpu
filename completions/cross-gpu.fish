@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 # Fish completion for cross-gpu
 
 set -l __cross_gpu_subcommands list info run

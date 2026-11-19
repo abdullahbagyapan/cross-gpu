@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """OpenCL C API (libOpenCL.so.1 / OpenCL.framework) backend plugin via ctypes."""
 
 from __future__ import annotations

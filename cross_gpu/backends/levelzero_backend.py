@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """oneAPI Level Zero (libze_loader.so.1) backend plugin via ctypes."""
 
 from __future__ import annotations

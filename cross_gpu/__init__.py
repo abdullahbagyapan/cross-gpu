@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """cross-gpu: cross-platform GPU stress-testing framework."""
 
 from __future__ import annotations
