@@ -1,15 +1,15 @@
-# `cross-gpu` Telemetry Reference
+# CrossGPU Telemetry Reference
 
-`cross-gpu` collects hardware telemetry during `cross-gpu run` via a lightweight 2-file subsystem under `cross_gpu/telemetry/` with zero external Python dependencies.
+CrossGPU collects hardware telemetry during `cross-gpu run` via a lightweight 2-file subsystem under `src/telemetry/` with zero external Python dependencies.
 
 ---
 
 ## 1. Two-File Telemetry Architecture
 
-- **`cross_gpu/telemetry/__init__.py`:**
+- **`src/telemetry/__init__.py`:**
   - `read_telemetry(device)`: routes each device to its platform-native reader (macOS `ioreg`, Linux NVIDIA NVML merged with Linux DRM/hwmon `sysfs`, or Linux AMD/Intel DRM/hwmon `sysfs`).
   - `TelemetrySampler`: drift-compensated 1 Hz background polling thread built on `time.monotonic()` and `threading.Event.wait(timeout)`. Skips missed intervals without burst catch-up, and wakes/joins immediately when `stop()` is called so sub-second runs (`250ms`, `500ms`) never stall on a 1-second sleep.
-- **`cross_gpu/telemetry/readers.py`:**
+- **`src/telemetry/readers.py`:**
   - `read_nvml(pci_bdf)`: lazy `ctypes` client for `libnvidia-ml.so.1` (fallback `libnvidia-ml.so`) with explicit `argtypes`/`restype`, matched by normalized PCIe BDF.
   - `read_linux_sysfs(pci_bdf)`: scans `/sys/class/drm/card*/device/uevent` for matching `PCI_SLOT_NAME=`, reading DRM utilization/clocks and `hwmon/hwmon*/` sensors.
   - `read_macos(registry_id)` / `parse_ioreg_output(...)`: runs unprivileged `ioreg -r -d 1 -w 0 -c IOAccelerator` and parses `PerformanceStatistics` for the matching Metal `registryID` (`IORegistryEntryID`).
@@ -47,7 +47,7 @@
 
 ## 4. Non-Root Behavior & Troubleshooting
 
-- **macOS (Apple Silicon & Intel):** `cross-gpu` intentionally uses unprivileged `ioreg` rather than privileged `powermetrics` or private SMC APIs so operators never need `sudo`. On Apple Silicon (`AGXAccelerator`), `PerformanceStatistics` exposes GPU utilization (`gpu_util_pct`), whereas die temperature, wattage, clock frequencies, and fan RPM are intentionally unavailable without root privileges and are therefore omitted cleanly.
+- **macOS (Apple Silicon & Intel):** CrossGPU intentionally uses unprivileged `ioreg` rather than privileged `powermetrics` or private SMC APIs so operators never need `sudo`. On Apple Silicon (`AGXAccelerator`), `PerformanceStatistics` exposes GPU utilization (`gpu_util_pct`), whereas die temperature, wattage, clock frequencies, and fan RPM are intentionally unavailable without root privileges and are therefore omitted cleanly.
 - **Linux (`sysfs` & containers):**
   - If `/sys/class/drm` is not bind-mounted into a container or a virtual GPU does not expose `hwmon` nodes, missing sensors are silently omitted without causing errors.
   - Ensure your user has read permissions on `/sys/class/drm/card*/device/` (standard on Linux) and read/write permissions on `/dev/dri/renderD*` (and `/dev/kfd` for AMD ROCm) via the `render` and `video` groups (`sudo usermod -aG render,video "$USER"`).

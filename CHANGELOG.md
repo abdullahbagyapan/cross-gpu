@@ -20,15 +20,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Telemetry sensor sanitization (`NaN`/`Inf`, sentinel/out-of-range filtering) that omits unusable fields from `text` and JSON/NDJSON outputs and suppresses empty telemetry ticks.
 
 ### Changed
-- Refactored `cross_gpu/embed_binary.py` to load raw kernel source files directly via Python standard library `importlib.resources` with plain tuple in-memory cache keys and sanitized, metadata-validated disk cache artifacts (removing all opaque base64 blobs and digest hashing).
+- Refactored `src/embed_binary.py` to load raw kernel source files directly via Python standard library `importlib.resources` with plain tuple in-memory cache keys and sanitized, metadata-validated disk cache artifacts (removing all opaque base64 blobs and digest hashing).
+- Renamed source directory directly to `src/` with relative imports while preserving the collision-free `cross_gpu` installed namespace.
 
 ## [0.1.0] - 2026-11-19
 
 ### Added
-- **CLI & Contracts:** Zero-dependency Python 3.10+ standard-library CLI (`cross-gpu` and `python3 -m cross_gpu`) with `list`, `info`, and `run` subcommands, duration/warmup parsing, text and JSON/NDJSON output, and deterministic severity-ordered exit codes (`0=SUCCESS`, `1=USAGE_ERROR`, `2=INIT_ERROR`, `3=COMPUTE_ERROR`, `4=HARDWARE_ERROR`).
+- **CLI & Contracts:** Zero-dependency Python 3.10+ standard-library CLI (`cross-gpu`) with `list`, `info`, and `run` subcommands, duration/warmup parsing, text and JSON/NDJSON output, and deterministic severity-ordered exit codes (`0=SUCCESS`, `1=USAGE_ERROR`, `2=INIT_ERROR`, `3=COMPUTE_ERROR`, `4=HARDWARE_ERROR`).
 - **Native `ctypes` Backends:** 5 runtime plugins with explicit `argtypes`/`restype` declarations: CUDA (`libcuda.so.1`), HIP (`libamdhip64.so.6`), oneAPI Level Zero (`libze_loader.so.1`), Apple Metal (`libobjc.A.dylib` + `Metal.framework`), and OpenCL (`libOpenCL.so.1` / `OpenCL.framework`).
 - **Physical GPU Deduplication:** Cross-backend deduplication by PCIe BDF, hardware UUID / macOS IOKit `registryID`, and fallback fingerprint, prioritizing native backends (`100`) over OpenCL (`50`).
-- **Native GPU Kernels:** 90 standalone kernel source files (`18` compilation units × `5` backends) under `cross_gpu/kernels/` with zero fake datatype or tensor emulation and explicit `#error "UNSUPPORTED: ..."` hardware gates.
+- **Native GPU Kernels:** 90 standalone kernel source files (`18` compilation units × `5` backends) under `src/kernels/` with zero fake datatype or tensor emulation and explicit `#error "UNSUPPORTED: ..."` hardware gates.
 - **20 Stress Workloads & Golden Verification:** Scalar integer (`int64`..`int4`), floating-point/ML (`fp64`..`fp4`, `bf16`), hardware matrix/tensor (`fp32`, `fp16`, `bf16`, `int8`), VRAM pattern/sweep, and D2D/H2D/D2H bandwidth executors with fixed SI unit scaling (`GOP/s`, `GFLOP/s`, `GB/s`), safe VRAM headroom sizing, `50–200 ms` watchdog-safe batch calibration, and host-side golden verification.
 - **1 Hz Hardware Telemetry:** Drift-compensated background sampling via NVML (`libnvidia-ml.so.1`), Linux DRM/hwmon `sysfs`, and unprivileged macOS `ioreg`.
 - **Distro-Friendly Packaging:** Offline PEP 517/621 `setuptools` build configuration (`pyproject.toml`), `MANIFEST.in`, MIT `LICENSE`, `cross-gpu(1)` man page, `Makefile` staging install, and GitHub CI/Release workflows.

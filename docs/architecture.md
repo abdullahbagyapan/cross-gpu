@@ -1,13 +1,13 @@
-# `cross-gpu` Architecture
+# CrossGPU Architecture
 
-`cross-gpu` is a cross-platform GPU discovery, hardware telemetry, and stress-testing CLI targeting **Linux** (`x86_64`, `aarch64`) and **macOS** (`arm64`, `x86_64`), written exclusively with the **Python 3.10+ standard library** and **zero external Python dependencies**.
+CrossGPU is a cross-platform GPU discovery, hardware telemetry, and stress-testing CLI targeting **Linux** (`x86_64`, `aarch64`) and **macOS** (`arm64`, `x86_64`), written exclusively with the **Python 3.10+ standard library** and **zero external Python dependencies**.
 
 ---
 
 ## 1. High-Level System Flow
 
 ```text
-                       cross-gpu CLI (cross_gpu/cli.py)
+                       cross-gpu CLI (src/cli.py)
                [list | info | run]  stdout=data  stderr=diagnostics
                                      |
           +--------------------------+--------------------------+
@@ -40,16 +40,16 @@ backends/registry.py                                  workloads/registry.py
 
 | Path | Responsibility |
 |---|---|
-| `cross_gpu/cli.py`, `cross_gpu/__main__.py` | `DeterministicArgumentParser`, `ms`/`s`/`m`/`h` duration parser, `difflib` typo hints, `text`/JSON/NDJSON formatters, `-v`/`--verbose` logger, strict `stdout`/`stderr` routing |
-| `cross_gpu/models.py` | Dataclasses for `DeviceCapabilities`, `BackendDeviceInfo`, `BackendBinding`, `GPUDevice`, `TelemetrySample`, `StepMetrics`, `VerificationResult`, and `WorkloadResult` |
-| `cross_gpu/exit_codes.py` | Severity-ordered `ExitCode` (`0..4`), typed exceptions, and `aggregate_exit_codes` (`max`) |
-| `cross_gpu/backends/` | `BackendPlugin` ABC + `ctypes` ABI helpers (`base.py`), plugin discovery (`registry.py`), and 5 native plugins (`cuda`, `hip`, `levelzero`, `metal`, `opencl`) |
-| `cross_gpu/dedup.py` | Backend priority ordering and 3-tier physical GPU deduplication |
-| `cross_gpu/kernels/` | 90 raw standalone native GPU stress kernels (`18` compilation units × `5` backends) bundled as package data |
-| `cross_gpu/embed_binary.py` | `importlib.resources` raw kernel loader, `verify`/`list` CLI, 5 runtime compiler adapters, and 2-tier compile cache |
-| `cross_gpu/workloads/` | 20-workload registry, golden verification math, safe VRAM sizing, dynamic batch calibration, and 20 concrete `WorkloadExecutor` classes |
-| `cross_gpu/runner.py` | Multi-GPU execution coordinator, warmup exclusion, periodic verification checkpoints, and signal-safe cleanup |
-| `cross_gpu/telemetry/` | 1 Hz drift-compensated `TelemetrySampler` (`__init__.py`) and platform readers + sensor sanitization (`readers.py`) |
+| `src/cli.py`, `src/__main__.py` | `DeterministicArgumentParser`, `ms`/`s`/`m`/`h` duration parser, `difflib` typo hints, `text`/JSON/NDJSON formatters, `-v`/`--verbose` logger, strict `stdout`/`stderr` routing |
+| `src/models.py` | Dataclasses for `DeviceCapabilities`, `BackendDeviceInfo`, `BackendBinding`, `GPUDevice`, `TelemetrySample`, `StepMetrics`, `VerificationResult`, and `WorkloadResult` |
+| `src/exit_codes.py` | Severity-ordered `ExitCode` (`0..4`), typed exceptions, and `aggregate_exit_codes` (`max`) |
+| `src/backends/` | `BackendPlugin` ABC + `ctypes` ABI helpers (`base.py`), plugin discovery (`registry.py`), and 5 native plugins (`cuda`, `hip`, `levelzero`, `metal`, `opencl`) |
+| `src/dedup.py` | Backend priority ordering and 3-tier physical GPU deduplication |
+| `src/kernels/` | 90 raw standalone native GPU stress kernels (`18` compilation units × `5` backends) bundled as package data |
+| `src/embed_binary.py` | `importlib.resources` raw kernel loader, `verify`/`list` CLI, 5 runtime compiler adapters, and 2-tier compile cache |
+| `src/workloads/` | 20-workload registry, golden verification math, safe VRAM sizing, dynamic batch calibration, and 20 concrete `WorkloadExecutor` classes |
+| `src/runner.py` | Multi-GPU execution coordinator, warmup exclusion, periodic verification checkpoints, and signal-safe cleanup |
+| `src/telemetry/` | 1 Hz drift-compensated `TelemetrySampler` (`__init__.py`) and platform readers + sensor sanitization (`readers.py`) |
 
 ---
 
@@ -63,7 +63,7 @@ backends/registry.py                                  workloads/registry.py
 
 ## 4. Backend Priority & 3-Tier Physical GPU Deduplication
 
-When a GPU is exposed by multiple runtimes (for example, CUDA + OpenCL on NVIDIA, HIP + OpenCL on AMD, Level Zero + OpenCL on Intel, or Metal + OpenCL on Apple Silicon), `cross_gpu/dedup.py` merges them into a single canonical `GPUDevice`:
+When a GPU is exposed by multiple runtimes (for example, CUDA + OpenCL on NVIDIA, HIP + OpenCL on AMD, Level Zero + OpenCL on Intel, or Metal + OpenCL on Apple Silicon), `src/dedup.py` merges them into a single canonical `GPUDevice`:
 
 1. **Priority Weighting:**
    - Native backends (`cuda`, `hip`, `levelzero`, `metal`): `priority = 100`
@@ -81,16 +81,17 @@ When a GPU is exposed by multiple runtimes (for example, CUDA + OpenCL on NVIDIA
 
 ### Single-Source-of-Truth Kernel Loading (`importlib.resources`)
 
-- Raw kernel source files under `cross_gpu/kernels/{cuda,hip,levelzero,metal,opencl}/` are bundled directly as package data in `pyproject.toml` and loaded via Python's standard library:
+- Raw kernel source files under `src/kernels/{cuda,hip,levelzero,metal,opencl}/` are bundled directly as package data in `pyproject.toml` and loaded via Python's standard library:
 
   ```python
-  resource = importlib.resources.files("cross_gpu").joinpath("kernels", backend, filename)
+  root_pkg = (__package__ or "src").split(".")[0]
+  resource = importlib.resources.files(root_pkg).joinpath("kernels", backend, filename)
   source_bytes = resource.read_bytes()
   ```
 
 - `KERNEL_SPECS` stores lightweight metadata (`backend`, `workload`, `filename`, `format`, `entry_point`, `entry_points`) for all 90 compilation units—with **no** duplicated source blobs or digest hashes inside Python source files.
 - `load_kernel_source(backend, workload)` decodes each kernel as strict UTF-8 and memoizes the `KernelSource` in memory (`clear_kernel_source_cache()` resets the cache in tests). Missing specs, missing resource files, or invalid UTF-8 raise `KernelNotFoundError` (`ExitCode.INIT_ERROR = 2`).
-- `python3 -m cross_gpu.embed_binary verify` validates every registered resource resolves cleanly, is non-empty UTF-8, declares every expected entry-point symbol, and detects orphan files under `cross_gpu/kernels/`.
+- `python3 -m src.embed_binary verify` validates every registered resource resolves cleanly, is non-empty UTF-8, declares every expected entry-point symbol, and detects orphan files under `src/kernels/`.
 
 ### Per-Backend Runtime Compilation Flows
 

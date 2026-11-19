@@ -1,6 +1,6 @@
-# `cross-gpu` Documentation
+# CrossGPU Documentation
 
-`cross-gpu` is a cross-platform GPU discovery, hardware telemetry, and stress-testing CLI targeting **Linux** (`x86_64`, `aarch64`) and **macOS** (`arm64`, `x86_64`), implemented exclusively with the **Python 3.10+ standard library** and **zero external runtime dependencies**.
+CrossGPU is a cross-platform GPU discovery, hardware telemetry, and stress-testing CLI targeting **Linux** (`x86_64`, `aarch64`) and **macOS** (`arm64`, `x86_64`), implemented exclusively with the **Python 3.10+ standard library** and **zero external runtime dependencies**.
 
 ## Documentation Index
 

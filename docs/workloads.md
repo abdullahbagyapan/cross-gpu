@@ -1,4 +1,4 @@
-# `cross-gpu` Workload Reference & Verification Specification
+# CrossGPU Workload Reference & Verification Specification
 
 All 20 canonical stress workloads report throughput and totals in **fixed, non-auto-scaling SI units** (`10^9` scaling):
 

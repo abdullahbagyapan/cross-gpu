@@ -1,6 +1,6 @@
 # Backends & Hardware Capability Matrix
 
-`cross-gpu` ships 5 zero-dependency `ctypes` backend plugins under `cross_gpu/backends/`. Unsupported datatypes or matrix instructions are **never** silently emulated with scalar loops—each kernel enforces explicit capability and compile-time `#error "UNSUPPORTED: ..."` hardware gates.
+CrossGPU ships 5 zero-dependency `ctypes` backend plugins under `src/backends/`. Unsupported datatypes or matrix instructions are **never** silently emulated with scalar loops—each kernel enforces explicit capability and compile-time `#error "UNSUPPORTED: ..."` hardware gates.
 
 ---
 
@@ -28,7 +28,7 @@
 ### oneAPI Level Zero (`levelzero`, priority `100`)
 
 - **Runtime Libraries:** `libze_loader.so.1`, fallback `libze_loader.so`.
-- **Runtime Compiler:** Translates `cross_gpu/kernels/levelzero/*.cl` to SPIR-V (`ZE_MODULE_FORMAT_IL_SPIRV`) using `clang -cc1 -triple spir64-unknown-unknown` + `llvm-spirv` (preferred when both are in `PATH`), falling back to Intel `ocloc compile -spirv_only`. Pre-built SPIR-V binaries passed via `source_override` bypass compilation.
+- **Runtime Compiler:** Translates `src/kernels/levelzero/*.cl` to SPIR-V (`ZE_MODULE_FORMAT_IL_SPIRV`) using `clang -cc1 -triple spir64-unknown-unknown` + `llvm-spirv` (preferred when both are in `PATH`), falling back to Intel `ocloc compile -spirv_only`. Pre-built SPIR-V binaries passed via `source_override` bypass compilation.
 - **Hardware Identification:** PCIe BDF (`zeDevicePciGetPropertiesExt`) and 16-byte device UUID (`zeDeviceGetProperties`).
 - **Linux Permissions:** Requires read/write access to `/dev/dri/renderD*` (`render` / `video` group membership); permission denials are detected and surfaced on `stderr`.
 - **Error Classification:**

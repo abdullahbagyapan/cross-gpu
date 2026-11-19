@@ -1,6 +1,6 @@
 # Packaging & Distribution Guide
 
-`cross-gpu` is designed for clean, reproducible, offline packaging across **Debian/Ubuntu**, **Fedora/RHEL**, **Arch Linux**, **Nix**, and **Homebrew** with **zero external Python runtime dependencies** (`requires-python = ">=3.10"`, `dependencies = []`, SPDX license `MIT`).
+CrossGPU is designed for clean, reproducible, offline packaging across **Debian/Ubuntu**, **Fedora/RHEL**, **Arch Linux**, **Nix**, and **Homebrew** with **zero external Python runtime dependencies** (`requires-python = ">=3.10"`, `dependencies = []`, SPDX license `MIT`).
 
 ---
 
@@ -49,10 +49,12 @@ Installed FHS files:
 
 ## 2. Bundled Raw Kernel Package Data
 
-All 90 raw GPU kernel source files under `cross_gpu/kernels/` are declared as package data in `pyproject.toml` and included in `sdist` via `MANIFEST.in`:
+All 90 raw GPU kernel source files under `src/kernels/` are declared as package data in `pyproject.toml` (mapped via `package-dir = {"cross_gpu" = "src"}`) and included in `sdist` via `MANIFEST.in`:
 
 ```toml
 [tool.setuptools]
+packages = ["cross_gpu", "cross_gpu.backends", "cross_gpu.telemetry", "cross_gpu.workloads"]
+package-dir = {"cross_gpu" = "src"}
 include-package-data = true
 
 [tool.setuptools.package-data]
@@ -64,13 +66,13 @@ cross_gpu = [
 ]
 ```
 
-At runtime, `cross_gpu/embed_binary.py` reads kernels strictly via `importlib.resources.files("cross_gpu").joinpath("kernels", backend, filename)`—working identically across editable checkouts, read-only system installs (`/usr/lib/python3/dist-packages/`), zipapps, virtual environments, and Homebrew kegs.
+At runtime, `src/embed_binary.py` reads kernels strictly via `importlib.resources.files((__package__ or "src").split(".")[0]).joinpath("kernels", backend, filename)`—working identically across editable checkouts, read-only system installs (`/usr/lib/python3/dist-packages/`), zipapps, virtual environments, and Homebrew kegs.
 
 ---
 
 ## 3. FHS, Read-Only Safety & Environment Variables
 
-- `cross-gpu` **never** writes inside the installed Python package tree.
+- CrossGPU **never** writes inside the installed Python package tree.
 - Runtime-compiled GPU binaries (`.bin`) and metadata sidecars (`.json`) are stored strictly in OS-standard cache directories:
   - **Linux / POSIX:** `$XDG_CACHE_HOME/cross-gpu` (when `$XDG_CACHE_HOME` is an absolute path), defaulting to `~/.cache/cross-gpu`.
   - **macOS:** `~/Library/Caches/cross-gpu` by default, or `$XDG_CACHE_HOME/cross-gpu` when an absolute `XDG_CACHE_HOME` is explicitly set.
@@ -86,9 +88,9 @@ At runtime, `cross_gpu/embed_binary.py` reads kernels strictly via `importlib.re
 All unit tests run 100% offline with zero GPU hardware required:
 
 ```sh
-python3 -m compileall -q cross_gpu tests
+python3 -m compileall -q src tests
 python3 -m unittest discover -s tests -v
-python3 -m cross_gpu.embed_binary verify
+python3 -m src.embed_binary verify
 bash -n completions/cross-gpu.bash
 ```
 
@@ -101,7 +103,7 @@ mkdir -p /tmp/cg-extract && tar -xzf /tmp/cg-sdist/cross_gpu-*.tar.gz -C /tmp/cg
 (
   cd /tmp/cg-extract/cross_gpu-*
   python3 -m unittest discover -s tests -v
-  python3 -m cross_gpu.embed_binary verify
+  python3 -m src.embed_binary verify
 )
 ```
 

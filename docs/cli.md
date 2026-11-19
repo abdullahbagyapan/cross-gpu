@@ -1,6 +1,6 @@
-# `cross-gpu` CLI Reference
+# CrossGPU CLI Reference
 
-Complete command-line interface, output schemas, exit codes, and operational recipes for `cross-gpu`.
+Complete command-line interface, output schemas, exit codes, and operational recipes for CrossGPU.
 
 ---
 
@@ -17,7 +17,7 @@ cross-gpu --help
 cross-gpu --version
 ```
 
-The CLI can also be invoked directly as a Python module: `python3 -m cross_gpu <command> [options]`.
+The CLI can also be invoked directly as a Python module: `python3 -m cross_gpu <command> [options]` (when installed) or `python3 -m src <command> [options]` (from source repository).
 
 ---
 

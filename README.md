@@ -1,4 +1,4 @@
-# cross-gpu
+# CrossGPU
 
 Cross-platform GPU discovery, hardware telemetry, and stress-testing CLI targeting **Linux** (`x86_64`, `aarch64`) and **macOS** (`arm64`, `x86_64`), built exclusively with the **Python 3.10+ standard library** and **zero external runtime dependencies**.
 
@@ -8,7 +8,7 @@ Cross-platform GPU discovery, hardware telemetry, and stress-testing CLI targeti
 
 - **5 native `ctypes` backends:** CUDA (`libcuda.so.1`), HIP (`libamdhip64.so.6`), oneAPI Level Zero (`libze_loader.so.1`), Apple Metal (`libobjc.A.dylib` + `Metal.framework`), and OpenCL (`libOpenCL.so.1` / `OpenCL.framework`).
 - **Priority & physical deduplication:** Native backends (`100`) take precedence over OpenCL (`50`) using normalized PCIe BDF, hardware UUID / macOS `registryID`, and fallback fingerprints.
-- **90 native kernels & 20 verified workloads:** Raw kernels under `cross_gpu/kernels/` loaded via `importlib.resources` (zero fake emulation), host-side golden verification, fixed SI unit rates (`GOP/s`, `GFLOP/s`, `GB/s`), and safe VRAM sizing.
+- **90 native kernels & 20 verified workloads:** Raw kernels under `src/kernels/` loaded via `importlib.resources` (zero fake emulation), host-side golden verification, fixed SI unit rates (`GOP/s`, `GFLOP/s`, `GB/s`), and safe VRAM sizing.
 - **Clean 1 Hz telemetry & stream hygiene:** NVML, Linux DRM/hwmon `sysfs`, and unprivileged macOS `ioreg` with sensor sanitization (omitting unusable fields and empty ticks), strict `stdout`/`stderr` separation, `-v`/`--verbose`, `difflib` typo hints, and `ms`/`s`/`m`/`h` durations.
 
 ## Installation
