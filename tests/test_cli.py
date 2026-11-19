@@ -8,7 +8,9 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 import unittest
+from unittest import mock
 
 from cross_gpu.backends.base import (
     BackendContext,
@@ -16,9 +18,13 @@ from cross_gpu.backends.base import (
     DeviceBuffer,
     HostBuffer,
     KernelModule,
+    check_linux_render_node_hint,
 )
+from cross_gpu.backends.registry import KNOWN_BACKENDS
 from cross_gpu.cli import (
     build_parser,
+    format_progress_prefix,
+    format_run_summary_text,
     format_telemetry_line,
     main,
     parse_duration,
@@ -26,8 +32,18 @@ from cross_gpu.cli import (
     resolve_output_format,
 )
 from cross_gpu.exit_codes import BackendHardwareError, ExitCode
-from cross_gpu.models import BackendBinding, BackendDeviceInfo, DeviceCapabilities, GPUDevice
-from cross_gpu.workloads import list_workload_names
+from cross_gpu.models import (
+    BackendBinding,
+    BackendDeviceInfo,
+    DeviceCapabilities,
+    GPUDevice,
+    WorkloadResult,
+)
+from cross_gpu.workloads import (
+    WORKLOAD_REGISTRY,
+    explain_unsupported_workload,
+    list_workload_names,
+)
 
 
 class _FaultyHardwarePlugin(BackendPlugin):
@@ -251,6 +267,340 @@ class TestCLI(unittest.TestCase):
         ):
             res = subprocess.run(cmd, capture_output=True, text=True, check=False)
             self.assertEqual(res.returncode, 0, res.stderr)
+
+    def test_help_epilog_examples_and_stdout_routing(self) -> None:
+        out, err = io.StringIO(), io.StringIO()
+        with self.assertRaises(SystemExit) as ctx:
+            main(["--help"], stdout=out, stderr=err)
+        self.assertEqual(ctx.exception.code, 0)
+        self.assertEqual(err.getvalue(), "")
+        help_text = out.getvalue()
+        self.assertIn("Examples:", help_text)
+        self.assertIn("cross-gpu list", help_text)
+        self.assertIn("cross-gpu info --json", help_text)
+        self.assertIn(
+            "cross-gpu run --device 0 --test compute-fp32,memory-pattern --warmup 5s --duration 30s",
+            help_text,
+        )
+        self.assertIn(
+            "cross-gpu run --backend opencl --test all --duration 60s --json",
+            help_text,
+        )
+
+    def test_difflib_typo_hints_return_usage_error_1(self) -> None:
+        # Unknown --test single token and comma-separated tokens
+        out, err = io.StringIO(), io.StringIO()
+        rc = main(["run", "--test", "fp32,mem-sweep"], stdout=out, stderr=err)
+        self.assertEqual(rc, ExitCode.USAGE_ERROR)
+        self.assertEqual(out.getvalue(), "")
+        self.assertIn("unknown test 'fp32'. Did you mean: compute-fp32?", err.getvalue())
+        self.assertIn("unknown test 'mem-sweep'. Did you mean: memory-sweep?", err.getvalue())
+
+        # Unknown --backend plugin name
+        out, err = io.StringIO(), io.StringIO()
+        rc = main(["run", "--backend", "cdua"], stdout=out, stderr=err)
+        self.assertEqual(rc, ExitCode.USAGE_ERROR)
+        self.assertEqual(out.getvalue(), "")
+        self.assertIn("unknown backend 'cdua'. Did you mean: cuda?", err.getvalue())
+
+        # Unknown subcommand
+        out, err = io.StringIO(), io.StringIO()
+        with self.assertRaises(SystemExit) as ctx:
+            main(["lsit"], stdout=out, stderr=err)
+        self.assertEqual(ctx.exception.code, int(ExitCode.USAGE_ERROR))
+        self.assertEqual(out.getvalue(), "")
+        self.assertIn("unknown command 'lsit'. Did you mean: list?", err.getvalue())
+
+    def test_stdout_stderr_separation_under_json_verbose(self) -> None:
+        dev_cuda = _sample_device()
+        dev_opencl_info = BackendDeviceInfo(
+            backend="opencl",
+            priority=50,
+            backend_device_index=0,
+            native_handle=1,
+            name="NVIDIA RTX 4090",
+            vendor="NVIDIA",
+            vendor_id=0x10DE,
+            pci_bdf="0000:01:00.0",
+            total_memory_bytes=24 * 1024**3,
+        )
+
+        class _MockCuda(_FaultyHardwarePlugin):
+            name = "cuda"
+            priority = 100
+
+            def is_available(self) -> bool:
+                self._record_probe("probe cuda: loaded libcuda.so.1")
+                return True
+
+            def enumerate_devices(self) -> list[BackendDeviceInfo]:
+                return [dev_cuda.bindings[0].device_info]
+
+        class _MockOpenCL(_FaultyHardwarePlugin):
+            name = "opencl"
+            priority = 50
+
+            def is_available(self) -> bool:
+                self._record_probe("probe opencl: loaded libOpenCL.so.1")
+                return True
+
+            def enumerate_devices(self) -> list[BackendDeviceInfo]:
+                return [dev_opencl_info]
+
+        class _MockUnavailableMetal(_FaultyHardwarePlugin):
+            name = "metal"
+            priority = 100
+
+            def is_available(self) -> bool:
+                self._load_error = "macOS only"
+                self._record_probe("probe metal: skipped (macOS only)")
+                return False
+
+        mock_plugins = [_MockCuda(), _MockOpenCL(), _MockUnavailableMetal()]
+        with mock.patch(
+            "cross_gpu.backends.registry.discover_backends",
+            return_value=mock_plugins,
+        ):
+            for cmd in ("list", "info"):
+                out, err = io.StringIO(), io.StringIO()
+                rc = main([cmd, "--json", "-v"], stdout=out, stderr=err)
+                self.assertEqual(rc, ExitCode.SUCCESS)
+                parsed = json.loads(out.getvalue())
+                self.assertEqual(len(parsed["devices"]), 1)
+                self.assertNotIn("[verbose]", out.getvalue())
+                self.assertIn("[verbose] probe cuda: loaded libcuda.so.1", err.getvalue())
+                self.assertIn("[verbose] backend metal: unavailable (macOS only)", err.getvalue())
+                self.assertIn("selected cuda (100) over opencl (50)", err.getvalue())
+
+            # run --json -v with unsupported workload keeps stdout strictly valid NDJSON
+            out, err = io.StringIO(), io.StringIO()
+            rc = main(
+                ["run", "--device", "0", "--test", "compute-fp8", "--duration", "1s", "--json", "-v"],
+                stdout=out,
+                stderr=err,
+            )
+            self.assertEqual(rc, ExitCode.HARDWARE_ERROR)
+            lines = [json.loads(line) for line in out.getvalue().strip().splitlines()]
+            self.assertGreaterEqual(len(lines), 3)
+            self.assertNotIn("[verbose]", out.getvalue())
+            self.assertIn("[verbose] probe cuda: loaded libcuda.so.1", err.getvalue())
+
+    def test_text_mode_progress_prefix_and_summary_tally(self) -> None:
+        warmup_prefix = format_progress_prefix(
+            "compute-fp32",
+            workload_index=4,
+            workload_total=20,
+            phase="warmup",
+            phase_elapsed_s=3.0,
+            phase_duration_s=5.0,
+        )
+        self.assertEqual(warmup_prefix, "[04/20 compute-fp32 | warmup 3s/5s]")
+
+        run_prefix = format_progress_prefix(
+            "compute-fp32",
+            workload_index=4,
+            workload_total=20,
+            phase="run",
+            phase_elapsed_s=18.0,
+            phase_duration_s=60.0,
+        )
+        self.assertEqual(run_prefix, "[04/20 compute-fp32 | 18s/60s]")
+
+        telem_line = format_telemetry_line(
+            {
+                "elapsed_s": 23.0,
+                "device": 0,
+                "phase": "run",
+                "workload": "compute-fp32",
+                "workload_index": 4,
+                "workload_total": 20,
+                "phase_elapsed_s": 18.0,
+                "phase_duration_s": 60.0,
+                "metrics": {"temperature_c": 70.0},
+            }
+        )
+        self.assertTrue(telem_line.startswith("[04/20 compute-fp32 | 18s/60s] dev=0 |"))
+
+        summary = format_run_summary_text(
+            [
+                WorkloadResult(0, "GPU", "cuda", "compute-fp32", "compute-fp", "pass", 1.0, 100.0, "GFLOP/s", 100.0, "GFLOP", 0, "", "", ExitCode.SUCCESS),
+                WorkloadResult(0, "GPU", "cuda", "compute-fp8", "compute-fp", "unsupported", 0.0, None, "GFLOP/s", None, "GFLOP", 0, "requires CUDA SM >= 8.9 (detected SM 8.6)", "requires CUDA SM >= 8.9 (detected SM 8.6)", ExitCode.SUCCESS),
+                WorkloadResult(0, "GPU", "cuda", "compute-int32", "compute-int", "fail", 1.0, 50.0, "GOP/s", 50.0, "GOP", 1, "SDC", "", ExitCode.COMPUTE_ERROR),
+                WorkloadResult(0, "GPU", "cuda", "memory-sweep", "memory", "hardware_error", 0.0, None, "GB/s", None, "GB", 0, "Xid 79", "", ExitCode.HARDWARE_ERROR),
+            ],
+            ExitCode.HARDWARE_ERROR,
+        )
+        self.assertIn("requires CUDA SM >= 8.9 (detected SM 8.6)", summary)
+        self.assertIn(
+            "Tally: passed=1 failed=1 unsupported=1 hardware_error=1 | Exit Code: 4 (HARDWARE_ERROR)",
+            summary,
+        )
+
+    def test_actionable_unsupported_reasons_and_backend_diagnostics(self) -> None:
+        # Concrete backend/arch skip explanations
+        cuda_sm86 = BackendDeviceInfo(
+            backend="cuda",
+            priority=100,
+            backend_device_index=0,
+            native_handle=0,
+            name="NVIDIA RTX 3090",
+            vendor="NVIDIA",
+            architecture="sm_86",
+            compute_capability="8.6",
+            capabilities=DeviceCapabilities(fp8=False),
+        )
+        self.assertEqual(
+            explain_unsupported_workload(cuda_sm86, "compute-fp8"),
+            "requires CUDA SM >= 8.9 (detected SM 8.6)",
+        )
+        metal_m2 = BackendDeviceInfo(
+            backend="metal",
+            priority=100,
+            backend_device_index=0,
+            native_handle=0,
+            name="Apple M2",
+            vendor="Apple",
+            architecture="applegpu_g14g",
+            capabilities=DeviceCapabilities(fp64=False),
+        )
+        self.assertEqual(
+            explain_unsupported_workload(metal_m2, "compute-fp64"),
+            "Metal lacks native fp64",
+        )
+        opencl_dev = BackendDeviceInfo(
+            backend="opencl",
+            priority=50,
+            backend_device_index=0,
+            native_handle=0,
+            name="Generic OpenCL GPU",
+            vendor="Intel",
+            capabilities=DeviceCapabilities(fp16=False),
+        )
+        self.assertEqual(
+            explain_unsupported_workload(opencl_dev, "compute-fp16"),
+            "OpenCL device missing cl_khr_fp16 extension",
+        )
+
+        # Unsupported reason appears in BOTH text and JSON/NDJSON run outputs
+        class _HealthyStubPlugin(_FaultyHardwarePlugin):
+            def create_context(self, device: BackendDeviceInfo) -> BackendContext:
+                return BackendContext(backend=self.name, device_info=device, handle=1)
+
+        gpu_sm86 = GPUDevice(
+            index=0,
+            name=cuda_sm86.name,
+            vendor=cuda_sm86.vendor,
+            architecture=cuda_sm86.architecture,
+            compute_capability=cuda_sm86.compute_capability,
+            capabilities=cuda_sm86.capabilities,
+            bindings=[BackendBinding(backend="cuda", priority=100, device_info=cuda_sm86)],
+        )
+        out_json, err_json = io.StringIO(), io.StringIO()
+        rc_json = main(
+            ["run", "--device", "0", "--test", "compute-fp8", "--duration", "1s", "--json"],
+            stdout=out_json,
+            stderr=err_json,
+            discover_fn=lambda: ([gpu_sm86], {"cuda": _HealthyStubPlugin()}, {}),
+        )
+        self.assertEqual(rc_json, ExitCode.INIT_ERROR)
+        events = [json.loads(ln) for ln in out_json.getvalue().strip().splitlines()]
+        wl_event = next(e for e in events if e["type"] == "workload_result")
+        self.assertEqual(wl_event["status"], "unsupported")
+        self.assertEqual(wl_event["reason"], "requires CUDA SM >= 8.9 (detected SM 8.6)")
+
+        out_text, err_text = io.StringIO(), io.StringIO()
+        rc_text = main(
+            ["run", "--device", "0", "--test", "compute-fp8", "--duration", "1s"],
+            stdout=out_text,
+            stderr=err_text,
+            discover_fn=lambda: ([gpu_sm86], {"cuda": _HealthyStubPlugin()}, {}),
+        )
+        self.assertEqual(rc_text, ExitCode.INIT_ERROR)
+        self.assertIn("requires CUDA SM >= 8.9 (detected SM 8.6)", out_text.getvalue())
+
+        # Zero GPUs detected: stdout stays valid JSON/clean text, stderr prints concrete backend reasons
+        diag_map = {
+            "cuda": "libcuda.so.1 not found",
+            "levelzero": "/dev/dri/renderD128 permission denied — check 'render'/'video' group membership",
+            "metal": "macOS only",
+            "opencl": "no OpenCL platforms detected",
+        }
+        for cmd in ("list", "info"):
+            out_z, err_z = io.StringIO(), io.StringIO()
+            rc_z = main(
+                [cmd, "--json"],
+                stdout=out_z,
+                stderr=err_z,
+                discover_fn=lambda: ([], {}, diag_map),
+            )
+            self.assertEqual(rc_z, ExitCode.SUCCESS)
+            self.assertEqual(json.loads(out_z.getvalue()), {"devices": []})
+            for k, v in diag_map.items():
+                self.assertIn(f"{k}: {v}", err_z.getvalue())
+
+        # Requested unavailable backend reports concrete reason on stderr
+        out_unavail, err_unavail = io.StringIO(), io.StringIO()
+        rc_unavail = main(
+            ["run", "--backend", "levelzero", "--test", "compute-fp32", "--duration", "1s", "--json"],
+            stdout=out_unavail,
+            stderr=err_unavail,
+            discover_fn=lambda: ([], {}, diag_map),
+        )
+        self.assertEqual(rc_unavail, ExitCode.INIT_ERROR)
+        self.assertIn("renderD128 permission denied", err_unavail.getvalue())
+        ndjson_lines = [json.loads(ln) for ln in out_unavail.getvalue().strip().splitlines()]
+        self.assertEqual(ndjson_lines[-1]["exit_code"], int(ExitCode.INIT_ERROR))
+
+        # Linux render node permission hint helper
+        with tempfile.TemporaryDirectory() as tmp:
+            dri = Path(tmp)
+            node = dri / "renderD128"
+            node.write_bytes(b"")
+            with mock.patch("os.access", return_value=False):
+                hint = check_linux_render_node_hint(platform_name="linux", dri_dir=dri)
+            self.assertIsNotNone(hint)
+            self.assertIn("permission denied", hint or "")
+            self.assertIn("'render'/'video'", hint or "")
+
+    def test_shell_completions_cover_all_workloads_backends_and_flags(self) -> None:
+        repo_root = Path(__file__).resolve().parent.parent
+        completion_files = (
+            repo_root / "completions" / "cross-gpu.bash",
+            repo_root / "completions" / "_cross-gpu",
+            repo_root / "completions" / "cross-gpu.fish",
+        )
+        expected_workloads = list(WORKLOAD_REGISTRY.keys())
+        expected_backends = ("auto", *KNOWN_BACKENDS)
+        expected_subcommands = ("list", "info", "run")
+        expected_long_flags = (
+            "help",
+            "version",
+            "format",
+            "json",
+            "verbose",
+            "device",
+            "test",
+            "duration",
+            "warmup",
+            "backend",
+        )
+
+        zsh_lines = (repo_root / "completions" / "_cross-gpu").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(zsh_lines[0], "#compdef cross-gpu")
+        self.assertEqual(zsh_lines[1], "# SPDX-License-Identifier: MIT")
+
+        for comp_path in completion_files:
+            self.assertTrue(comp_path.is_file(), f"Missing completion file {comp_path}")
+            content = comp_path.read_text(encoding="utf-8")
+            self.assertIn("SPDX-License-Identifier: MIT", content)
+            for wl in expected_workloads:
+                self.assertIn(wl, content, f"Missing workload {wl!r} in {comp_path.name}")
+            for backend in expected_backends:
+                self.assertIn(backend, content, f"Missing backend {backend!r} in {comp_path.name}")
+            for cmd in expected_subcommands:
+                self.assertIn(cmd, content, f"Missing subcommand {cmd!r} in {comp_path.name}")
+            for flag in expected_long_flags:
+                self.assertIn(flag, content, f"Missing flag {flag!r} in {comp_path.name}")
 
 
 if __name__ == "__main__":

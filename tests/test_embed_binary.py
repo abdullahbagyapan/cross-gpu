@@ -26,6 +26,7 @@ from cross_gpu.embed_binary import (
     compute_memory_cache_key,
     default_cache_dir,
     default_entry_points,
+    is_disk_cache_disabled,
     load_kernel_source,
     verify_kernel_resources,
 )
@@ -525,11 +526,44 @@ class TestEmbedBinary(unittest.TestCase):
             fake_home / ".cache" / "cross-gpu",
         )
 
-        # macOS: ~/Library/Caches/cross-gpu
+        # macOS: ~/Library/Caches/cross-gpu by default, or $XDG_CACHE_HOME/cross-gpu if explicitly set
         self.assertEqual(
             default_cache_dir(platform_name="darwin", env={}, home=fake_home),
             fake_home / "Library" / "Caches" / "cross-gpu",
         )
+        self.assertEqual(
+            default_cache_dir(
+                platform_name="darwin",
+                env={"XDG_CACHE_HOME": "/tmp/mac-xdg-cache"},
+                home=fake_home,
+            ),
+            Path("/tmp/mac-xdg-cache/cross-gpu"),
+        )
+        self.assertEqual(
+            default_cache_dir(
+                platform_name="darwin",
+                env={"XDG_CACHE_HOME": "relative/cache"},
+                home=fake_home,
+            ),
+            fake_home / "Library" / "Caches" / "cross-gpu",
+        )
+
+        # CROSS_GPU_NO_CACHE=1|true|yes disables disk cache on all platforms
+        for truthy in ("1", "true", "TRUE", "Yes", " yes "):
+            self.assertTrue(is_disk_cache_disabled({"CROSS_GPU_NO_CACHE": truthy}))
+            self.assertIsNone(
+                default_cache_dir(
+                    platform_name="linux",
+                    env={
+                        "CROSS_GPU_NO_CACHE": truthy,
+                        "XDG_CACHE_HOME": "/var/cache/custom",
+                        "CROSS_GPU_CACHE_DIR": "/tmp/cg-override",
+                    },
+                    home=fake_home,
+                )
+            )
+        for falsey in ("", "0", "false", "no"):
+            self.assertFalse(is_disk_cache_disabled({"CROSS_GPU_NO_CACHE": falsey}))
 
         # Explicit CROSS_GPU_CACHE_DIR override takes precedence on any platform
         self.assertEqual(
@@ -540,6 +574,57 @@ class TestEmbedBinary(unittest.TestCase):
             ),
             Path("/tmp/cg-override"),
         )
+
+        # CROSS_GPU_NO_CACHE=1 completely bypasses disk reads & writes while keeping memory cache
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_dir = Path(tmp) / "nocache_dir"
+            cache = RuntimeBinaryCache(cache_dir)
+            with mock.patch.dict("os.environ", {"CROSS_GPU_NO_CACHE": "1"}, clear=False):
+                self.assertIsNone(cache.cache_dir)
+                compiled = compile_kernel_runtime(
+                    "opencl",
+                    "compute-fp32",
+                    "gfx1100",
+                    capabilities=DeviceCapabilities(fp32=True),
+                    cache=cache,
+                )
+                compiled_mem = compile_kernel_runtime(
+                    "opencl",
+                    "compute-fp32",
+                    "gfx1100",
+                    capabilities=DeviceCapabilities(fp32=True),
+                    cache=cache,
+                )
+                self.assertIs(compiled, compiled_mem)
+                self.assertFalse(cache_dir.exists())
+
+            # Populate disk cache when CROSS_GPU_NO_CACHE is unset, then confirm CROSS_GPU_NO_CACHE=true skips reading it
+            with mock.patch.dict("os.environ", {"CROSS_GPU_NO_CACHE": "0"}, clear=False):
+                fresh_populate = RuntimeBinaryCache(cache_dir)
+                compile_kernel_runtime(
+                    "opencl",
+                    "compute-fp32",
+                    "gfx1100",
+                    capabilities=DeviceCapabilities(fp32=True),
+                    cache=fresh_populate,
+                )
+                self.assertEqual(len(list(cache_dir.glob("*.bin"))), 1)
+
+            from cross_gpu.embed_binary import _compile_opencl as real_compile_opencl
+
+            with mock.patch.dict("os.environ", {"CROSS_GPU_NO_CACHE": "TRUE"}, clear=False):
+                bypass_cache = RuntimeBinaryCache(cache_dir)
+                with mock.patch(
+                    "cross_gpu.embed_binary._compile_opencl", wraps=real_compile_opencl
+                ) as spy:
+                    compile_kernel_runtime(
+                        "opencl",
+                        "compute-fp32",
+                        "gfx1100",
+                        capabilities=DeviceCapabilities(fp32=True),
+                        cache=bypass_cache,
+                    )
+                    self.assertEqual(spy.call_count, 1)
 
         # Unset/unavailable HOME degrades safely to None (in-memory-only cache)
         with mock.patch("pathlib.Path.home", side_effect=RuntimeError("no home")):
