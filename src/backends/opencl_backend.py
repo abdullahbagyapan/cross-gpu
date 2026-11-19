@@ -427,6 +427,12 @@ class OpenCLBackend(BackendPlugin):
             return int(val.value)
         return None
 
+    def _get_device_size_t(self, api: _OpenCLApi, dev: Any, param: int) -> int | None:
+        val = ctypes.c_size_t(0)
+        if api.clGetDeviceInfo(dev, param, ctypes.sizeof(val), ctypes.byref(val), None) == CL_SUCCESS:
+            return int(val.value)
+        return None
+
     def _get_platform_str(self, api: _OpenCLApi, plat: Any, param: int) -> str:
         size = ctypes.c_size_t(0)
         if api.clGetPlatformInfo(plat, param, 0, None, ctypes.byref(size)) != CL_SUCCESS or size.value == 0:
@@ -522,7 +528,7 @@ class OpenCLBackend(BackendPlugin):
                 total_mem = self._get_device_u64(api, dev, CL_DEVICE_GLOBAL_MEM_SIZE) or 0
                 max_alloc = self._get_device_u64(api, dev, CL_DEVICE_MAX_MEM_ALLOC_SIZE) or 0
                 cu_count = self._get_device_u32(api, dev, CL_DEVICE_MAX_COMPUTE_UNITS) or 0
-                max_wg = self._get_device_u64(api, dev, CL_DEVICE_MAX_WORK_GROUP_SIZE) or 0
+                max_wg = self._get_device_size_t(api, dev, CL_DEVICE_MAX_WORK_GROUP_SIZE) or 0
                 max_clock = self._get_device_u32(api, dev, CL_DEVICE_MAX_CLOCK_FREQUENCY)
                 fp64_cfg = self._get_device_u64(api, dev, CL_DEVICE_DOUBLE_FP_CONFIG) or 0
                 fp16_cfg = self._get_device_u64(api, dev, CL_DEVICE_HALF_FP_CONFIG) or 0
@@ -744,6 +750,8 @@ class OpenCLBackend(BackendPlugin):
         dev = ctx.extra["device"]
         dev_arr = (ctypes.c_void_p * 1)(dev)
         raw = bytes(compiled_binary.binary_bytes)
+        if not raw:
+            raise KernelCompilationError("Empty OpenCL program source/binary")
         fmt = getattr(compiled_binary, "format", "opencl_source")
         err = ctypes.c_int32(0)
 
@@ -764,7 +772,7 @@ class OpenCLBackend(BackendPlugin):
             )
             self._check(err.value, "clCreateProgramWithSource")
 
-        flags_str = " ".join(getattr(compiled_binary, "compile_flags", ()))
+        flags_str = "" if fmt == "opencl_binary" else " ".join(getattr(compiled_binary, "compile_flags", ()))
         rc = api.clBuildProgram(
             program,
             1,

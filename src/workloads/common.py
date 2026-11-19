@@ -437,7 +437,12 @@ def write_host_buffer(buf: HostBuffer | bytearray, data: bytes | bytearray | mem
         buf[:n] = data
         return
     if isinstance(buf, HostBuffer) and buf.pointer:
-        c_src = (ctypes.c_ubyte * n).from_buffer(data) if isinstance(data, (bytearray, memoryview)) else ctypes.create_string_buffer(bytes(data), n)
+        is_writable = isinstance(data, bytearray) or (isinstance(data, memoryview) and not data.readonly)
+        c_src = (
+            (ctypes.c_ubyte * n).from_buffer(data)
+            if is_writable
+            else (ctypes.c_ubyte * n).from_buffer_copy(data)
+        )
         ctypes.memmove(ctypes.c_void_p(buf.pointer), c_src, n)
         return
     raise BackendInitError("Host buffer has neither a writable bytearray nor a valid C pointer")

@@ -179,7 +179,8 @@ def resolve_host_pointer(
         arr = (ctypes.c_ubyte * len(buf)).from_buffer(buf)
         return ctypes.cast(arr, ctypes.c_void_p), arr
     if isinstance(buf, memoryview):
-        arr = (ctypes.c_ubyte * buf.nbytes).from_buffer(buf)
+        arr_type = ctypes.c_ubyte * buf.nbytes
+        arr = arr_type.from_buffer_copy(buf) if buf.readonly else arr_type.from_buffer(buf)
         return ctypes.cast(arr, ctypes.c_void_p), arr
     if isinstance(buf, ctypes.Array):
         return ctypes.cast(buf, ctypes.c_void_p), buf

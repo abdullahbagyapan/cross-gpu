@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import threading
 from typing import Any, Mapping
 
 from ..backends.base import bind_c_symbol, bind_optional_c_symbol, load_shared_library
@@ -114,6 +115,7 @@ class _NvmlClient:
     """Lazy singleton wrapper for libnvidia-ml.so.1 with explicit ctypes signatures."""
 
     def __init__(self) -> None:
+        self._lock = threading.Lock()
         self._lib: ctypes.CDLL | None = None
         self._initialized = False
         self._failed = False
@@ -123,61 +125,66 @@ class _NvmlClient:
             return True
         if self._failed:
             return False
-        try:
-            lib = load_shared_library(NVML_LIB_CANDIDATES)
-            self.nvmlInit = bind_optional_c_symbol(
-                lib, "nvmlInit_v2", ctypes.c_int, []
-            ) or bind_c_symbol(lib, "nvmlInit", ctypes.c_int, [])
-            self.nvmlDeviceGetHandleByPciBusId = bind_optional_c_symbol(
-                lib,
-                "nvmlDeviceGetHandleByPciBusId_v2",
-                ctypes.c_int,
-                [ctypes.c_char_p, ctypes.POINTER(ctypes.c_void_p)],
-            ) or bind_c_symbol(
-                lib,
-                "nvmlDeviceGetHandleByPciBusId",
-                ctypes.c_int,
-                [ctypes.c_char_p, ctypes.POINTER(ctypes.c_void_p)],
-            )
-            self.nvmlDeviceGetTemperature = bind_c_symbol(
-                lib,
-                "nvmlDeviceGetTemperature",
-                ctypes.c_int,
-                [ctypes.c_void_p, ctypes.c_uint, ctypes.POINTER(ctypes.c_uint)],
-            )
-            self.nvmlDeviceGetPowerUsage = bind_c_symbol(
-                lib,
-                "nvmlDeviceGetPowerUsage",
-                ctypes.c_int,
-                [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint)],
-            )
-            self.nvmlDeviceGetUtilizationRates = bind_c_symbol(
-                lib,
-                "nvmlDeviceGetUtilizationRates",
-                ctypes.c_int,
-                [ctypes.c_void_p, ctypes.POINTER(_NvmlUtilization)],
-            )
-            self.nvmlDeviceGetClockInfo = bind_c_symbol(
-                lib,
-                "nvmlDeviceGetClockInfo",
-                ctypes.c_int,
-                [ctypes.c_void_p, ctypes.c_uint, ctypes.POINTER(ctypes.c_uint)],
-            )
-            self.nvmlDeviceGetFanSpeed = bind_c_symbol(
-                lib,
-                "nvmlDeviceGetFanSpeed",
-                ctypes.c_int,
-                [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint)],
-            )
-            if self.nvmlInit() != NVML_SUCCESS:
+        with self._lock:
+            if self._initialized:
+                return True
+            if self._failed:
+                return False
+            try:
+                lib = load_shared_library(NVML_LIB_CANDIDATES)
+                self.nvmlInit = bind_optional_c_symbol(
+                    lib, "nvmlInit_v2", ctypes.c_int, []
+                ) or bind_c_symbol(lib, "nvmlInit", ctypes.c_int, [])
+                self.nvmlDeviceGetHandleByPciBusId = bind_optional_c_symbol(
+                    lib,
+                    "nvmlDeviceGetHandleByPciBusId_v2",
+                    ctypes.c_int,
+                    [ctypes.c_char_p, ctypes.POINTER(ctypes.c_void_p)],
+                ) or bind_c_symbol(
+                    lib,
+                    "nvmlDeviceGetHandleByPciBusId",
+                    ctypes.c_int,
+                    [ctypes.c_char_p, ctypes.POINTER(ctypes.c_void_p)],
+                )
+                self.nvmlDeviceGetTemperature = bind_c_symbol(
+                    lib,
+                    "nvmlDeviceGetTemperature",
+                    ctypes.c_int,
+                    [ctypes.c_void_p, ctypes.c_uint, ctypes.POINTER(ctypes.c_uint)],
+                )
+                self.nvmlDeviceGetPowerUsage = bind_c_symbol(
+                    lib,
+                    "nvmlDeviceGetPowerUsage",
+                    ctypes.c_int,
+                    [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint)],
+                )
+                self.nvmlDeviceGetUtilizationRates = bind_c_symbol(
+                    lib,
+                    "nvmlDeviceGetUtilizationRates",
+                    ctypes.c_int,
+                    [ctypes.c_void_p, ctypes.POINTER(_NvmlUtilization)],
+                )
+                self.nvmlDeviceGetClockInfo = bind_c_symbol(
+                    lib,
+                    "nvmlDeviceGetClockInfo",
+                    ctypes.c_int,
+                    [ctypes.c_void_p, ctypes.c_uint, ctypes.POINTER(ctypes.c_uint)],
+                )
+                self.nvmlDeviceGetFanSpeed = bind_c_symbol(
+                    lib,
+                    "nvmlDeviceGetFanSpeed",
+                    ctypes.c_int,
+                    [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint)],
+                )
+                if self.nvmlInit() != NVML_SUCCESS:
+                    self._failed = True
+                    return False
+                self._lib = lib
+                self._initialized = True
+                return True
+            except Exception:
                 self._failed = True
                 return False
-            self._lib = lib
-            self._initialized = True
-            return True
-        except Exception:
-            self._failed = True
-            return False
 
 
 _NVML_CLIENT = _NvmlClient()
@@ -265,7 +272,11 @@ def _parse_dpm_active_mhz(path: Path) -> int | None:
 def _find_drm_device_dir(norm_bdf: str, drm_root: Path) -> Path | None:
     if not drm_root.is_dir():
         return None
-    for card_dir in sorted(drm_root.iterdir()):
+    try:
+        entries = sorted(drm_root.iterdir())
+    except OSError:
+        return None
+    for card_dir in entries:
         if not re.match(r"^card\d+$", card_dir.name):
             continue
         dev_dir = card_dir / "device"
@@ -313,7 +324,11 @@ def read_linux_sysfs(
 
     hwmon_root = dev_dir / "hwmon"
     if hwmon_root.is_dir():
-        for hw_dir in sorted(hwmon_root.iterdir()):
+        try:
+            hw_dirs = sorted(hwmon_root.iterdir())
+        except OSError:
+            hw_dirs = []
+        for hw_dir in hw_dirs:
             if not hw_dir.is_dir():
                 continue
             if temp_c is None:

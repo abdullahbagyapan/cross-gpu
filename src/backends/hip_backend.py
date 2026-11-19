@@ -29,8 +29,8 @@ from ..models import BackendDeviceInfo, DeviceCapabilities
 
 HIP_LIB_CANDIDATES: tuple[str, ...] = (
     "libamdhip64.so.6",
-    "libamdhip64.so",
     "libamdhip64.so.5",
+    "libamdhip64.so",
 )
 AMD_PCI_VENDOR_ID = 0x1002
 
@@ -38,6 +38,21 @@ HIP_SUCCESS = 0
 HIP_MEMCPY_HOST_TO_DEVICE = 1
 HIP_MEMCPY_DEVICE_TO_HOST = 2
 HIP_MEMCPY_DEVICE_TO_DEVICE = 3
+
+# ABI-stable hipDeviceAttribute_t values verified identical across ROCm 5.x and 6.x.
+HIP_DEVICE_ATTRIBUTE_INTEGRATED = 16
+HIP_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR = 23
+HIP_DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK = 56
+HIP_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR = 61
+HIP_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT = 63
+HIP_DEVICE_ATTRIBUTE_PCI_BUS_ID = 67
+HIP_DEVICE_ATTRIBUTE_PCI_DEVICE_ID = 68
+HIP_DEVICE_ATTRIBUTE_PCI_DOMAIN_ID = 69
+HIP_DEVICE_ATTRIBUTE_WARP_SIZE = 87
+
+# Generous opaque buffer size for hipGetDeviceProperties* when scanning gcnArchName only.
+_HIP_PROP_SCAN_BUF_SIZE = 8192
+_GCN_ARCH_TOKEN_RE = re.compile(rb"^gfx[0-9a-fA-F]{3,5}(?::[a-zA-Z0-9_+-]+)*$")
 
 HIP_HARDWARE_FAULT_CODES: frozenset[int] = frozenset(
     {
@@ -58,122 +73,12 @@ class _HipUuid(ctypes.Structure):
     _fields_ = [("bytes", ctypes.c_ubyte * 16)]
 
 
-class _HipDevicePropR0600(ctypes.Structure):
-    """ROCm 6.0+ hipDeviceProp_tR0600 ABI layout."""
-
-    _fields_ = [
-        ("name", ctypes.c_char * 256),
-        ("uuid", _HipUuid),
-        ("luid", ctypes.c_char * 8),
-        ("luidDeviceNodeMask", ctypes.c_uint),
-        ("totalGlobalMem", ctypes.c_size_t),
-        ("sharedMemPerBlock", ctypes.c_size_t),
-        ("regsPerBlock", ctypes.c_int),
-        ("warpSize", ctypes.c_int),
-        ("memPitch", ctypes.c_size_t),
-        ("maxThreadsPerBlock", ctypes.c_int),
-        ("maxThreadsDim", ctypes.c_int * 3),
-        ("maxGridSize", ctypes.c_int * 3),
-        ("clockRate", ctypes.c_int),
-        ("memoryClockRate", ctypes.c_int),
-        ("memoryBusWidth", ctypes.c_int),
-        ("totalConstMem", ctypes.c_size_t),
-        ("major", ctypes.c_int),
-        ("minor", ctypes.c_int),
-        ("textureAlignment", ctypes.c_size_t),
-        ("texturePitchAlignment", ctypes.c_size_t),
-        ("deviceOverlap", ctypes.c_int),
-        ("multiProcessorCount", ctypes.c_int),
-        ("kernelExecTimeoutEnabled", ctypes.c_int),
-        ("integrated", ctypes.c_int),
-        ("canMapHostMemory", ctypes.c_int),
-        ("computeMode", ctypes.c_int),
-        ("maxTexture1D", ctypes.c_int),
-        ("maxTexture1DMipmap", ctypes.c_int),
-        ("maxTexture1DLinear", ctypes.c_int),
-        ("maxTexture2D", ctypes.c_int * 2),
-        ("maxTexture2DMipmap", ctypes.c_int * 2),
-        ("maxTexture2DLinear", ctypes.c_int * 3),
-        ("maxTexture2DGather", ctypes.c_int * 2),
-        ("maxTexture3D", ctypes.c_int * 3),
-        ("maxTexture3DAlt", ctypes.c_int * 3),
-        ("maxTextureCubemap", ctypes.c_int),
-        ("maxTexture1DLayered", ctypes.c_int * 2),
-        ("maxTexture2DLayered", ctypes.c_int * 3),
-        ("maxTextureCubemapLayered", ctypes.c_int * 2),
-        ("surfaceAlignment", ctypes.c_size_t),
-        ("concurrentKernels", ctypes.c_int),
-        ("ECCEnabled", ctypes.c_int),
-        ("pciBusID", ctypes.c_int),
-        ("pciDeviceID", ctypes.c_int),
-        ("pciDomainID", ctypes.c_int),
-        ("tccDriver", ctypes.c_int),
-        ("asyncEngineCount", ctypes.c_int),
-        ("unifiedAddressing", ctypes.c_int),
-        ("memoryClockRateDup", ctypes.c_int),
-        ("memoryBusWidthDup", ctypes.c_int),
-        ("l2CacheSize", ctypes.c_int),
-        ("maxThreadsPerMultiProcessor", ctypes.c_int),
-        ("arch", ctypes.c_uint32),
-        ("maxSharedMemoryPerMultiProcessor", ctypes.c_size_t),
-        ("isMultiGpuBoard", ctypes.c_int),
-        ("gcnArch", ctypes.c_int),
-        ("gcnArchName", ctypes.c_char * 256),
-        ("_tail_pad", ctypes.c_ubyte * 512),
-    ]
-
-
-class _HipDevicePropLegacy(ctypes.Structure):
-    """ROCm 5.x hipDeviceProp_t ABI layout (no uuid/luid header fields)."""
-
-    _fields_ = [
-        ("name", ctypes.c_char * 256),
-        ("totalGlobalMem", ctypes.c_size_t),
-        ("sharedMemPerBlock", ctypes.c_size_t),
-        ("regsPerBlock", ctypes.c_int),
-        ("warpSize", ctypes.c_int),
-        ("memPitch", ctypes.c_size_t),
-        ("maxThreadsPerBlock", ctypes.c_int),
-        ("maxThreadsDim", ctypes.c_int * 3),
-        ("maxGridSize", ctypes.c_int * 3),
-        ("clockRate", ctypes.c_int),
-        ("totalConstMem", ctypes.c_size_t),
-        ("major", ctypes.c_int),
-        ("minor", ctypes.c_int),
-        ("textureAlignment", ctypes.c_size_t),
-        ("texturePitchAlignment", ctypes.c_size_t),
-        ("deviceOverlap", ctypes.c_int),
-        ("multiProcessorCount", ctypes.c_int),
-        ("kernelExecTimeoutEnabled", ctypes.c_int),
-        ("integrated", ctypes.c_int),
-        ("canMapHostMemory", ctypes.c_int),
-        ("computeMode", ctypes.c_int),
-        ("maxTexture1D", ctypes.c_int),
-        ("maxTexture2D", ctypes.c_int * 2),
-        ("maxTexture3D", ctypes.c_int * 3),
-        ("maxTexture1DLayered", ctypes.c_int * 2),
-        ("maxTexture2DLayered", ctypes.c_int * 3),
-        ("surfaceAlignment", ctypes.c_size_t),
-        ("concurrentKernels", ctypes.c_int),
-        ("ECCEnabled", ctypes.c_int),
-        ("pciBusID", ctypes.c_int),
-        ("pciDeviceID", ctypes.c_int),
-        ("pciDomainID", ctypes.c_int),
-        ("tccDriver", ctypes.c_int),
-        ("computePreemptionSupported", ctypes.c_int),
-        ("asyncEngineCount", ctypes.c_int),
-        ("unifiedAddressing", ctypes.c_int),
-        ("memoryClockRate", ctypes.c_int),
-        ("memoryBusWidth", ctypes.c_int),
-        ("l2CacheSize", ctypes.c_int),
-        ("maxThreadsPerMultiProcessor", ctypes.c_int),
-        ("arch", ctypes.c_uint32),
-        ("maxSharedMemoryPerMultiProcessor", ctypes.c_size_t),
-        ("isMultiGpuBoard", ctypes.c_int),
-        ("gcnArch", ctypes.c_int),
-        ("gcnArchName", ctypes.c_char * 256),
-        ("_tail_pad", ctypes.c_ubyte * 512),
-    ]
+def _extract_gcn_arch_name(raw_bytes: bytes) -> str:
+    """Extract null-terminated gfx* architecture string from an opaque hipDeviceProp_t buffer."""
+    for token in raw_bytes.split(b"\x00"):
+        if token and _GCN_ARCH_TOKEN_RE.match(token):
+            return token.decode("ascii", errors="ignore")
+    return ""
 
 
 class _HipApi:
@@ -197,13 +102,22 @@ class _HipApi:
         self.hipRuntimeGetVersion = bind_optional_c_symbol(
             lib, "hipRuntimeGetVersion", ctypes.c_int, [c_int_p]
         )
+        self.hipDeviceGetName = bind_c_symbol(
+            lib, "hipDeviceGetName", ctypes.c_int, [ctypes.c_char_p, ctypes.c_int, ctypes.c_int]
+        )
+        self.hipDeviceTotalMem = bind_c_symbol(
+            lib, "hipDeviceTotalMem", ctypes.c_int, [c_size_p, ctypes.c_int]
+        )
+        self.hipDeviceGetAttribute = bind_c_symbol(
+            lib, "hipDeviceGetAttribute", ctypes.c_int, [c_int_p, ctypes.c_int, ctypes.c_int]
+        )
         self.hipGetDevicePropertiesR0600 = bind_optional_c_symbol(
             lib,
             "hipGetDevicePropertiesR0600",
             ctypes.c_int,
-            [ctypes.POINTER(_HipDevicePropR0600), ctypes.c_int],
+            [ctypes.c_void_p, ctypes.c_int],
         )
-        self.hipGetDeviceProperties = bind_c_symbol(
+        self.hipGetDeviceProperties = bind_optional_c_symbol(
             lib, "hipGetDeviceProperties", ctypes.c_int, [ctypes.c_void_p, ctypes.c_int]
         )
         self.hipDeviceGetPCIBusId = bind_optional_c_symbol(
@@ -352,6 +266,21 @@ class HipBackend(BackendPlugin):
             raise BackendHardwareError(detail)
         raise BackendInitError(detail)
 
+    def _get_attr(self, api: _HipApi, dev_idx: int, attr: int) -> int | None:
+        val = ctypes.c_int(0)
+        rc = api.hipDeviceGetAttribute(ctypes.byref(val), attr, dev_idx)
+        return int(val.value) if rc == HIP_SUCCESS else None
+
+    def _probe_gcn_arch_name(self, api: _HipApi, dev_idx: int) -> str:
+        """Safely scan an oversized zeroed property buffer for the gfx* arch token."""
+        prop_fn = api.hipGetDevicePropertiesR0600 or api.hipGetDeviceProperties
+        if prop_fn is None:
+            return ""
+        raw_buf = ctypes.create_string_buffer(_HIP_PROP_SCAN_BUF_SIZE)
+        if prop_fn(ctypes.cast(raw_buf, ctypes.c_void_p), dev_idx) != HIP_SUCCESS:
+            return ""
+        return _extract_gcn_arch_name(raw_buf.raw)
+
     def enumerate_devices(self) -> list[BackendDeviceInfo]:
         api = self._require_api()
         count = ctypes.c_int(0)
@@ -374,23 +303,32 @@ class HipBackend(BackendPlugin):
 
         devices: list[BackendDeviceInfo] = []
         for idx in range(count.value):
-            if api.hipGetDevicePropertiesR0600 is not None:
-                prop = _HipDevicePropR0600()
-                self._check(
-                    api,
-                    api.hipGetDevicePropertiesR0600(ctypes.byref(prop), idx),
-                    f"hipGetDevicePropertiesR0600({idx})",
-                )
-            else:
-                prop = _HipDevicePropLegacy()
-                self._check(
-                    api,
-                    api.hipGetDeviceProperties(ctypes.byref(prop), idx),
-                    f"hipGetDeviceProperties({idx})",
-                )
+            name_buf = ctypes.create_string_buffer(256)
+            self._check(
+                api,
+                api.hipDeviceGetName(name_buf, len(name_buf), idx),
+                f"hipDeviceGetName({idx})",
+            )
+            name = name_buf.value.decode("utf-8", errors="replace").strip()
 
-            name = prop.name.decode("utf-8", errors="replace").strip()
-            gcn_arch = prop.gcnArchName.decode("utf-8", errors="replace").split("\x00", 1)[0].strip()
+            total_mem = ctypes.c_size_t(0)
+            self._check(
+                api,
+                api.hipDeviceTotalMem(ctypes.byref(total_mem), idx),
+                f"hipDeviceTotalMem({idx})",
+            )
+
+            major = self._get_attr(api, idx, HIP_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR) or 0
+            minor = self._get_attr(api, idx, HIP_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR) or 0
+            cu_count = self._get_attr(api, idx, HIP_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT) or 0
+            warp_size = self._get_attr(api, idx, HIP_DEVICE_ATTRIBUTE_WARP_SIZE) or 64
+            max_threads = self._get_attr(api, idx, HIP_DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK) or 256
+            integrated = bool(self._get_attr(api, idx, HIP_DEVICE_ATTRIBUTE_INTEGRATED) or 0)
+
+            gcn_arch = self._probe_gcn_arch_name(api, idx)
+            short_arch = gcn_arch.split(":", 1)[0] if gcn_arch else (
+                f"gfx{major}{minor:x}" if major else ""
+            )
 
             pci_bdf: str | None = None
             if api.hipDeviceGetPCIBusId is not None:
@@ -398,7 +336,11 @@ class HipBackend(BackendPlugin):
                 if api.hipDeviceGetPCIBusId(bdf_buf, len(bdf_buf), idx) == HIP_SUCCESS:
                     pci_bdf = bdf_buf.value.decode("ascii", errors="ignore").strip().lower() or None
             if pci_bdf is None:
-                pci_bdf = format_pci_bdf(prop.pciDomainID, prop.pciBusID, prop.pciDeviceID, 0)
+                domain = self._get_attr(api, idx, HIP_DEVICE_ATTRIBUTE_PCI_DOMAIN_ID)
+                bus = self._get_attr(api, idx, HIP_DEVICE_ATTRIBUTE_PCI_BUS_ID)
+                pci_dev = self._get_attr(api, idx, HIP_DEVICE_ATTRIBUTE_PCI_DEVICE_ID)
+                if domain is not None and bus is not None and pci_dev is not None:
+                    pci_bdf = format_pci_bdf(domain, bus, pci_dev, 0)
 
             uuid_str: str | None = None
             if api.hipDeviceGetUuid is not None:
@@ -415,20 +357,20 @@ class HipBackend(BackendPlugin):
                     name=name,
                     vendor="AMD",
                     vendor_id=AMD_PCI_VENDOR_ID,
-                    architecture=gcn_arch.split(":", 1)[0] if gcn_arch else f"gfx{prop.gcnArch}",
-                    compute_capability=f"{prop.major}.{prop.minor}",
-                    total_memory_bytes=int(prop.totalGlobalMem),
+                    architecture=short_arch,
+                    compute_capability=f"{major}.{minor}" if major else "",
+                    total_memory_bytes=int(total_mem.value),
                     free_memory_bytes=None,
-                    compute_units=int(prop.multiProcessorCount),
+                    compute_units=cu_count,
                     driver_version=drv_ver,
                     pci_bdf=pci_bdf,
                     uuid=uuid_str,
-                    capabilities=_hip_capabilities(gcn_arch),
+                    capabilities=_hip_capabilities(gcn_arch or short_arch),
                     extra={
-                        "warp_size": int(prop.warpSize),
-                        "max_threads_per_block": int(prop.maxThreadsPerBlock),
+                        "warp_size": warp_size,
+                        "max_threads_per_block": max_threads,
                         "gcn_arch_name": gcn_arch,
-                        "has_unified_memory": bool(prop.integrated),
+                        "has_unified_memory": integrated,
                     },
                 )
             )
@@ -471,10 +413,13 @@ class HipBackend(BackendPlugin):
     def free_device(self, ctx: BackendContext, buf: DeviceBuffer) -> None:
         if not buf.handle or self._api is None:
             return
-        self._activate_device(self._api, ctx)
-        self._api.hipFree(ctypes.c_void_p(int(buf.handle)))
-        buf.handle = 0
-        buf.address = 0
+        try:
+            if ctx.handle is not None:
+                self._api.hipSetDevice(int(ctx.handle))
+            self._api.hipFree(ctypes.c_void_p(int(buf.handle)))
+        finally:
+            buf.handle = 0
+            buf.address = 0
 
     def alloc_pinned_host(self, ctx: BackendContext, size_bytes: int) -> HostBuffer:
         api = self._require_api()
@@ -493,10 +438,13 @@ class HipBackend(BackendPlugin):
     def free_pinned_host(self, ctx: BackendContext, buf: HostBuffer) -> None:
         if not buf.handle or self._api is None or self._api.hipHostFree is None:
             return
-        self._activate_device(self._api, ctx)
-        self._api.hipHostFree(ctypes.c_void_p(int(buf.handle)))
-        buf.handle = 0
-        buf.pointer = 0
+        try:
+            if ctx.handle is not None:
+                self._api.hipSetDevice(int(ctx.handle))
+            self._api.hipHostFree(ctypes.c_void_p(int(buf.handle)))
+        finally:
+            buf.handle = 0
+            buf.pointer = 0
 
     def memcpy_h2d(
         self,
@@ -581,10 +529,13 @@ class HipBackend(BackendPlugin):
     def unload_module(self, ctx: BackendContext, module: KernelModule) -> None:
         if module.handle is None or self._api is None:
             return
-        self._activate_device(self._api, ctx)
-        self._api.hipModuleUnload(module.handle)
-        module.handle = None
-        module.functions.clear()
+        try:
+            if ctx.handle is not None:
+                self._api.hipSetDevice(int(ctx.handle))
+            self._api.hipModuleUnload(module.handle)
+        finally:
+            module.handle = None
+            module.functions.clear()
 
     def launch_kernel(
         self,

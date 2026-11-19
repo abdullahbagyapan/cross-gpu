@@ -31,8 +31,8 @@ LEVELZERO_LIB_CANDIDATES: tuple[str, ...] = ("libze_loader.so.1", "libze_loader.
 
 ZE_RESULT_SUCCESS = 0
 ZE_RESULT_ERROR_DEVICE_LOST = 0x70000001
-ZE_RESULT_ERROR_DEVICE_REQUIRES_RESET = 0x70000005
-ZE_RESULT_ERROR_DEVICE_IN_LOW_POWER_STATE = 0x70000006
+ZE_RESULT_ERROR_DEVICE_REQUIRES_RESET = 0x70000006
+ZE_RESULT_ERROR_DEVICE_IN_LOW_POWER_STATE = 0x70000007
 
 ZE_HARDWARE_FAULT_CODES: frozenset[int] = frozenset(
     {
@@ -520,8 +520,9 @@ class LevelZeroBackend(BackendPlugin):
     def _check(self, rc: int, action: str) -> None:
         if rc == ZE_RESULT_SUCCESS:
             return
-        detail = f"{action} failed with ze_result_t=0x{rc & 0xFFFFFFFF:08x}"
-        if rc in ZE_HARDWARE_FAULT_CODES:
+        code = rc & 0xFFFFFFFF
+        detail = f"{action} failed with ze_result_t=0x{code:08x}"
+        if code in ZE_HARDWARE_FAULT_CODES:
             raise BackendHardwareError(detail)
         raise BackendInitError(detail)
 
@@ -697,6 +698,11 @@ class LevelZeroBackend(BackendPlugin):
     def destroy_context(self, ctx: BackendContext) -> None:
         if self._api is None:
             return
+        if ctx.queue is not None:
+            try:
+                self._api.zeCommandQueueSynchronize(ctx.queue, ZE_UINT64_MAX)
+            except Exception:
+                pass
         if ctx.command_list is not None:
             self._api.zeCommandListDestroy(ctx.command_list)
             ctx.command_list = None
@@ -868,8 +874,14 @@ class LevelZeroBackend(BackendPlugin):
     def load_module(self, ctx: BackendContext, compiled_binary: Any) -> KernelModule:
         api = self._require_api()
         raw = bytes(compiled_binary.binary_bytes)
+        if not raw:
+            raise KernelCompilationError("Empty Level Zero SPIR-V module binary")
         buf = (ctypes.c_ubyte * len(raw)).from_buffer_copy(raw)
-        flags_bytes = " ".join(getattr(compiled_binary, "compile_flags", ())).encode("utf-8")
+        # Preprocessor -D macros are already compiled into SPIR-V; pass only non-macro build options.
+        backend_flags = [
+            f for f in getattr(compiled_binary, "compile_flags", ()) if not f.startswith("-D")
+        ]
+        flags_bytes = " ".join(backend_flags).encode("utf-8")
         desc = _ZeModuleDesc(
             stype=ZE_STRUCTURE_TYPE_MODULE_DESC,
             pNext=None,
@@ -899,7 +911,7 @@ class LevelZeroBackend(BackendPlugin):
             if api.zeModuleBuildLogDestroy is not None:
                 api.zeModuleBuildLogDestroy(log_ptr.value)
         if rc != ZE_RESULT_SUCCESS:
-            if rc in ZE_HARDWARE_FAULT_CODES:
+            if (rc & 0xFFFFFFFF) in ZE_HARDWARE_FAULT_CODES:
                 self._check(rc, "zeModuleCreate")
             raise KernelCompilationError(
                 f"zeModuleCreate failed with ze_result_t=0x{rc & 0xFFFFFFFF:08x}",

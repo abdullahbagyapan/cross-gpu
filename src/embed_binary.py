@@ -33,12 +33,13 @@ from .exit_codes import (
 from .models import DeviceCapabilities
 from .workloads import WORKLOAD_SPECS_BY_NAME, device_supports_workload
 
-NVRTC_LIB_CANDIDATES: tuple[str, ...] = ("libnvrtc.so.12", "libnvrtc.so", "libnvrtc.so.11.2")
+NVRTC_LIB_CANDIDATES: tuple[str, ...] = ("libnvrtc.so.12", "libnvrtc.so.11.2", "libnvrtc.so")
 HIPRTC_LIB_CANDIDATES: tuple[str, ...] = (
     "libhiprtc.so.6",
-    "libhiprtc.so",
     "libhiprtc.so.5",
     "libamdhip64.so.6",
+    "libamdhip64.so.5",
+    "libhiprtc.so",
     "libamdhip64.so",
 )
 
@@ -794,8 +795,13 @@ def _compile_hip_hiprtc(
                 log_text = log_buf.value.decode("utf-8", errors="replace")
 
         if compile_rc != 0:
+            err_name = ""
+            if api.hiprtcGetErrorString is not None:
+                raw_err = api.hiprtcGetErrorString(compile_rc)
+                if raw_err:
+                    err_name = raw_err.decode("utf-8", errors="replace")
             raise KernelCompilationError(
-                f"hiprtcCompileProgram failed with code {compile_rc}",
+                f"hiprtcCompileProgram failed ({err_name or compile_rc})",
                 compiler_log=log_text,
             )
 
@@ -1023,9 +1029,20 @@ def _compile_metal(
             check=False,
         )
         if res2.returncode != 0 or not lib_path.is_file():
+            link_err = f"{res2.stdout}\n{res2.stderr}".strip()
+            if _is_missing_metal_toolchain_error(link_err):
+                return CompiledKernelBinary(
+                    backend="metal",
+                    workload=workload,
+                    entry_point=entry_point,
+                    format="msl_source",
+                    binary_bytes=prepared_source,
+                    compile_flags=flags,
+                    compiler_log=link_err,
+                )
             raise KernelCompilationError(
                 f"Metal metallib linking failed (rc={res2.returncode})",
-                compiler_log=f"{res2.stdout}\n{res2.stderr}".strip(),
+                compiler_log=link_err,
             )
         return CompiledKernelBinary(
             backend="metal",

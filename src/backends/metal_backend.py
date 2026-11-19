@@ -209,6 +209,7 @@ class _MetalApi:
         self.sel_error = self.sel_registerName(b"error")
         self.sel_code = self.sel_registerName(b"code")
         self.sel_localizedDescription = self.sel_registerName(b"localizedDescription")
+        self.sel_retain = self.sel_registerName(b"retain")
         self.sel_release = self.sel_registerName(b"release")
 
 
@@ -342,7 +343,7 @@ class MetalBackend(BackendPlugin):
             return obj
         if api.objc_retain is not None:
             return api.objc_retain(obj)
-        return obj
+        return api.msg_ptr(obj, api.sel_retain)
 
     def enumerate_devices(self) -> list[BackendDeviceInfo]:
         api = self._require_api()
@@ -497,12 +498,19 @@ class MetalBackend(BackendPlugin):
     def synchronize(self, ctx: BackendContext) -> None:
         api = self._require_api()
         pending: list[Any] = ctx.extra.setdefault("pending_cmd_bufs", [])
-        while pending:
-            cmd_buf = pending.pop(0)
-            try:
-                self._wait_cmd_buffer(api, cmd_buf, "MTLCommandBuffer")
-            finally:
-                self._release_objc(api, cmd_buf)
+        if not pending:
+            return
+        pool = api.objc_autoreleasePoolPush() if api.objc_autoreleasePoolPush else None
+        try:
+            while pending:
+                cmd_buf = pending.pop(0)
+                try:
+                    self._wait_cmd_buffer(api, cmd_buf, "MTLCommandBuffer")
+                finally:
+                    self._release_objc(api, cmd_buf)
+        finally:
+            if pool is not None and api.objc_autoreleasePoolPop is not None:
+                api.objc_autoreleasePoolPop(pool)
 
     def alloc_device(self, ctx: BackendContext, size_bytes: int) -> DeviceBuffer:
         api = self._require_api()
@@ -649,8 +657,12 @@ class MetalBackend(BackendPlugin):
             err_ptr = ctypes.c_void_p(0)
 
             if fmt == "metallib":
+                if not raw:
+                    raise KernelCompilationError("Empty Metal metallib binary")
                 c_buf = ctypes.create_string_buffer(raw, len(raw))
                 dispatch_data = api.dispatch_data_create(c_buf, len(raw), None, None)
+                if not dispatch_data:
+                    raise BackendInitError("dispatch_data_create returned NULL")
                 try:
                     lib_ptr = api.msg_ptr_ptr_ptr(
                         ctx.handle,
@@ -731,46 +743,54 @@ class MetalBackend(BackendPlugin):
             if not cmd_buf:
                 raise BackendInitError("Failed to create Metal commandBuffer")
             self._retain_objc(api, cmd_buf)
+            enc: Any = None
+            committed = False
+            try:
+                enc = api.msg_ptr(cmd_buf, api.sel_computeCommandEncoder)
+                if not enc:
+                    raise BackendInitError("Failed to create MTLComputeCommandEncoder")
 
-            enc = api.msg_ptr(cmd_buf, api.sel_computeCommandEncoder)
-            if not enc:
-                self._release_objc(api, cmd_buf)
-                raise BackendInitError("Failed to create MTLComputeCommandEncoder")
+                api.msg_void_ptr(enc, api.sel_setComputePipelineState, pso)
 
-            api.msg_void_ptr(enc, api.sel_setComputePipelineState, pso)
+                keepalive: list[Any] = []
+                for idx, raw_arg in enumerate(args):
+                    coerced = coerce_kernel_arg(raw_arg)
+                    if isinstance(coerced, DeviceBuffer):
+                        api.msg_void_ptr_u64_u64(enc, api.sel_setBuffer, coerced.handle, 0, idx)
+                    else:
+                        keepalive.append(coerced)
+                        api.msg_void_ptr_u64_u64(
+                            enc,
+                            api.sel_setBytes,
+                            ctypes.cast(ctypes.byref(coerced), ctypes.c_void_p),
+                            ctypes.sizeof(coerced),
+                            idx,
+                        )
 
-            keepalive: list[Any] = []
-            for idx, raw_arg in enumerate(args):
-                coerced = coerce_kernel_arg(raw_arg)
-                if isinstance(coerced, DeviceBuffer):
-                    api.msg_void_ptr_u64_u64(enc, api.sel_setBuffer, coerced.handle, 0, idx)
-                else:
-                    keepalive.append(coerced)
-                    api.msg_void_ptr_u64_u64(
-                        enc,
-                        api.sel_setBytes,
-                        ctypes.cast(ctypes.byref(coerced), ctypes.c_void_p),
-                        ctypes.sizeof(coerced),
-                        idx,
+                if shared_mem > 0:
+                    api.msg_void_u64_u64(
+                        enc, api.sel_setThreadgroupMemoryLength, shared_mem, 0
                     )
 
-            if shared_mem > 0:
-                api.msg_void_u64_u64(
-                    enc, api.sel_setThreadgroupMemoryLength, shared_mem, 0
+                gx, gy, gz = grid
+                bx, by, bz = block
+                api.msg_void_size_size(
+                    enc,
+                    api.sel_dispatchThreadgroups,
+                    _MTLSize(width=gx, height=gy, depth=gz),
+                    _MTLSize(width=bx, height=by, depth=bz),
                 )
-
-            gx, gy, gz = grid
-            bx, by, bz = block
-            api.msg_void_size_size(
-                enc,
-                api.sel_dispatchThreadgroups,
-                _MTLSize(width=gx, height=gy, depth=gz),
-                _MTLSize(width=bx, height=by, depth=bz),
-            )
-            api.msg_void(enc, api.sel_endEncoding)
-            api.msg_void(cmd_buf, api.sel_commit)
-            ctx.extra.setdefault("pending_cmd_bufs", []).append(cmd_buf)
-            del keepalive
+                api.msg_void(enc, api.sel_endEncoding)
+                enc = None
+                api.msg_void(cmd_buf, api.sel_commit)
+                ctx.extra.setdefault("pending_cmd_bufs", []).append(cmd_buf)
+                committed = True
+                del keepalive
+            finally:
+                if enc is not None:
+                    api.msg_void(enc, api.sel_endEncoding)
+                if not committed:
+                    self._release_objc(api, cmd_buf)
         finally:
             if pool is not None and api.objc_autoreleasePoolPop is not None:
                 api.objc_autoreleasePoolPop(pool)

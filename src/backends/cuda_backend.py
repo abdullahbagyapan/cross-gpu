@@ -438,10 +438,13 @@ class CudaBackend(BackendPlugin):
     def free_device(self, ctx: BackendContext, buf: DeviceBuffer) -> None:
         if not buf.handle or self._api is None:
             return
-        self._ensure_current(self._api, ctx)
-        self._api.cuMemFree(int(buf.handle))
-        buf.handle = 0
-        buf.address = 0
+        try:
+            if ctx.handle is not None:
+                self._api.cuCtxSetCurrent(ctx.handle)
+            self._api.cuMemFree(int(buf.handle))
+        finally:
+            buf.handle = 0
+            buf.address = 0
 
     def alloc_pinned_host(self, ctx: BackendContext, size_bytes: int) -> HostBuffer:
         api = self._require_api()
@@ -458,10 +461,13 @@ class CudaBackend(BackendPlugin):
     def free_pinned_host(self, ctx: BackendContext, buf: HostBuffer) -> None:
         if not buf.handle or self._api is None:
             return
-        self._ensure_current(self._api, ctx)
-        self._api.cuMemFreeHost(ctypes.c_void_p(buf.handle))
-        buf.handle = 0
-        buf.pointer = 0
+        try:
+            if ctx.handle is not None:
+                self._api.cuCtxSetCurrent(ctx.handle)
+            self._api.cuMemFreeHost(ctypes.c_void_p(buf.handle))
+        finally:
+            buf.handle = 0
+            buf.pointer = 0
 
     def memcpy_h2d(
         self,
@@ -534,10 +540,13 @@ class CudaBackend(BackendPlugin):
     def unload_module(self, ctx: BackendContext, module: KernelModule) -> None:
         if module.handle is None or self._api is None:
             return
-        self._ensure_current(self._api, ctx)
-        self._api.cuModuleUnload(module.handle)
-        module.handle = None
-        module.functions.clear()
+        try:
+            if ctx.handle is not None:
+                self._api.cuCtxSetCurrent(ctx.handle)
+            self._api.cuModuleUnload(module.handle)
+        finally:
+            module.handle = None
+            module.functions.clear()
 
     def launch_kernel(
         self,
