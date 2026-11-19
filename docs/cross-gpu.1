@@ -3,10 +3,10 @@
 cross-gpu \- cross-platform GPU stress-testing CLI
 .SH SYNOPSIS
 .B cross-gpu list
-[\fB\-\-format\fR \fItext\fR|\fIjson\fR] [\fB\-\-json\fR]
+[\fB\-\-format\fR \fItext\fR|\fIjson\fR] [\fB\-\-json\fR] [\fB\-v\fR|\fB\-\-verbose\fR]
 .br
 .B cross-gpu info
-[\fB\-\-format\fR \fItext\fR|\fIjson\fR] [\fB\-\-json\fR]
+[\fB\-\-format\fR \fItext\fR|\fIjson\fR] [\fB\-\-json\fR] [\fB\-v\fR|\fB\-\-verbose\fR]
 .br
 .B cross-gpu run
 [\fB\-\-device\fR \fIall\fR|\fIN\fR]
@@ -16,6 +16,7 @@ cross-gpu \- cross-platform GPU stress-testing CLI
 [\fB\-\-backend\fR \fIauto\fR|\fIPLUGIN_NAME\fR]
 [\fB\-\-format\fR \fItext\fR|\fIjson\fR]
 [\fB\-\-json\fR]
+[\fB\-v\fR|\fB\-\-verbose\fR]
 .br
 .B cross-gpu \-\-help
 .br
@@ -80,10 +81,17 @@ Output format (\fBtext\fR default, or \fBjson\fR). In \fBrun\fR mode,
 .TP
 .B \-\-json
 Convenience shortcut for \fB\-\-format json\fR. Cannot be combined with
-\fB\-\-format text\fR.
+\fB\-\-format text\fR. Output on \fBstdout\fR is strictly valid JSON/NDJSON
+even when \fB\-\-verbose\fR is enabled.
+.TP
+.BR \-v ", " \-\-verbose
+Write structured diagnostic traces exclusively to \fBstderr\fR, covering
+shared-library SONAME/framework probes, physical GPU deduplication decisions,
+\fBimportlib.resources\fR kernel lookups, cache hits/misses, compile flags, and
+compiler diagnostics.
 .TP
 .B \-\-help
-Show command help and exit 0.
+Show command help (including usage examples) and exit 0.
 .TP
 .B \-\-version
 Show version information and exit 0.
@@ -113,18 +121,25 @@ fault, Xid/GPU fault, or fatal thermal shutdown error.
 .SH ENVIRONMENT
 .TP
 .B XDG_CACHE_HOME
-On Linux, overrides the base directory for runtime-compiled kernel caches
+Overrides the base directory for runtime-compiled kernel caches
 (stored under \fI$XDG_CACHE_HOME/cross-gpu\fR; defaults to
-\fI~/.cache/cross-gpu\fR). Ignored when relative per the XDG specification.
+\fI~/.cache/cross-gpu\fR on Linux and \fI~/Library/Caches/cross-gpu\fR on
+macOS unless explicitly set to an absolute path). Ignored when relative per
+the XDG specification.
+.TP
+.B CROSS_GPU_NO_CACHE
+When set to a truthy value (\fB1\fR, \fBtrue\fR, \fByes\fR, case-insensitive),
+completely bypasses disk cache reads and writes (using in-memory caching only).
 .TP
 .B CROSS_GPU_CACHE_DIR
 Explicitly overrides the runtime-compiled kernel cache directory on any
-platform.
+platform (ignored when \fBCROSS_GPU_NO_CACHE\fR is truthy).
 .TP
 .B LD_LIBRARY_PATH
 Standard Linux dynamic linker search path honored when resolving native GPU
-runtime SONAMEs (\fIlibcuda.so.1\fR, \fIlibamdhip64.so\fR,
-\fIlibze_loader.so.1\fR, \fIlibOpenCL.so.1\fR, \fIlibnvidia-ml.so.1\fR).
+runtime SONAMEs (\fIlibcuda.so.1\fR, \fIlibnvrtc.so.12\fR,
+\fIlibamdhip64.so.6\fR, \fIlibze_loader.so.1\fR, \fIlibOpenCL.so.1\fR,
+\fIlibnvidia-ml.so.1\fR).
 .TP
 .B DYLD_LIBRARY_PATH
 Standard macOS dynamic linker search path.
@@ -134,8 +149,18 @@ Standard macOS dynamic linker search path.
 Default runtime binary cache on Linux (fallback \fI~/.cache/cross-gpu\fR).
 .TP
 .I ~/Library/Caches/cross-gpu
-Default runtime binary cache on macOS. If the cache directory is read-only or
-unavailable, caching degrades cleanly to in-memory only.
+Default runtime binary cache on macOS (unless \fBXDG_CACHE_HOME\fR is set).
+If the cache directory is read-only or unavailable, caching degrades cleanly
+to in-memory only.
+.TP
+.I /usr/share/bash-completion/completions/cross-gpu
+Installed Bash completion script (under \fI$PREFIX/share/...\fR).
+.TP
+.I /usr/share/zsh/site-functions/_cross-gpu
+Installed Zsh completion script (under \fI$PREFIX/share/...\fR).
+.TP
+.I /usr/share/fish/vendor_completions.d/cross-gpu.fish
+Installed Fish completion script (under \fI$PREFIX/share/...\fR).
 .TP
 .I /sys/class/drm/card*/device/
 Linux DRM and \fIhwmon\fR sysfs hierarchy queried for AMD and Intel telemetry.

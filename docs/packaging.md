@@ -18,12 +18,19 @@ python3 -m build --no-isolation
 pip install --no-build-isolation --no-deps .
 ```
 
-The repository `Makefile` also provides standard `PREFIX` and `DESTDIR` staging, including installation of the `cross-gpu(1)` man page (`docs/cross-gpu.1`):
+The repository `Makefile` also provides standard `PREFIX` (default `/usr/local`) and `DESTDIR` staging, installing the `cross-gpu(1)` man page and all three shell completion scripts:
 
 ```sh
 make check
 make install PREFIX=/usr DESTDIR=/tmp/stage
 ```
+
+Installed FHS data files:
+
+- Man page: `$(DESTDIR)$(PREFIX)/share/man/man1/cross-gpu.1`
+- Bash completion: `$(DESTDIR)$(PREFIX)/share/bash-completion/completions/cross-gpu`
+- Zsh completion: `$(DESTDIR)$(PREFIX)/share/zsh/site-functions/_cross-gpu`
+- Fish completion: `$(DESTDIR)$(PREFIX)/share/fish/vendor_completions.d/cross-gpu.fish`
 
 ---
 
@@ -58,13 +65,27 @@ At runtime, `cross_gpu/embed_binary.py` reads these files exclusively through `i
 - `cross-gpu` **never** writes files inside the installed Python package directory.
 - Runtime-compiled GPU binaries (`.bin`) and plain metadata sidecars (`.json`) are cached strictly in OS-standard user cache locations:
   - **Linux / POSIX:** `$XDG_CACHE_HOME/cross-gpu` (when `$XDG_CACHE_HOME` is an absolute path), falling back to `~/.cache/cross-gpu`
-  - **macOS:** `~/Library/Caches/cross-gpu`
+  - **macOS:** `~/Library/Caches/cross-gpu` by default, or `$XDG_CACHE_HOME/cross-gpu` when an absolute `XDG_CACHE_HOME` is explicitly set
   - **Explicit override:** `$CROSS_GPU_CACHE_DIR`
+  - **Disable disk cache:** `CROSS_GPU_NO_CACHE=1` (or `true`/`yes`, case-insensitive) bypasses all disk cache reads and writes, using in-memory caching only (ideal for ephemeral containers, CI, and read-only chroots)
 - If the resolved cache directory is read-only, unwritable, or `$HOME` is unavailable (e.g., minimal sandboxed containers), `RuntimeBinaryCache` automatically degrades to in-memory-only tuple caching without raising errors.
 
 ---
 
-## 4. Verifying an Installed Package Outside the Source Tree
+## 4. Self-Contained `sdist` Archives
+
+Source distributions built via `python3 -m build --sdist --no-isolation` include the complete source tree, all 90 raw kernel files, `completions/*`, `docs/*` (including `docs/cross-gpu.1`), `tests/*.py`, `Makefile`, `LICENSE`, `README.md`, `CHANGELOG.md`, and `pyproject.toml`, while excluding `__pycache__`, `*.py[co]`, `.git`, `build/`, and `dist/`. Distro packagers can run the full offline test suite directly from an extracted `sdist` tarball:
+
+```sh
+tar -xzf cross_gpu-*.tar.gz
+cd cross_gpu-*
+python3 -m unittest discover -s tests -v
+python3 -m cross_gpu.embed_binary verify
+```
+
+---
+
+## 5. Verifying an Installed Package Outside the Source Tree
 
 Packagers should verify that `importlib.resources` resolves every bundled kernel from the installed package rather than from a relative path in the source checkout:
 
