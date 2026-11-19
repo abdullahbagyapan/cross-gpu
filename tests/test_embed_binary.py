@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import ctypes
+import io
+import json
 import math
 from pathlib import Path
 import struct
@@ -14,7 +16,10 @@ from unittest import mock
 
 from cross_gpu.embed_binary import (
     KERNEL_SPECS,
+    KernelSpec,
     RuntimeBinaryCache,
+    _main as embed_binary_main,
+    clear_kernel_source_cache,
     compile_kernel_runtime,
     compute_disk_cache_name,
     compute_memory_cache_key,
@@ -33,15 +38,53 @@ from cross_gpu.models import DeviceCapabilities
 
 
 class TestEmbedBinary(unittest.TestCase):
-    def test_missing_kernel_raises_kernel_not_found(self) -> None:
+    def test_load_kernel_source_memoization_and_clear_cache(self) -> None:
+        clear_kernel_source_cache()
+        src1 = load_kernel_source("cuda", "compute-fp32")
+        src2 = load_kernel_source("cuda", "compute-fp32")
+        src3 = load_kernel_source("cuda", "compute_fp32")
+        self.assertIs(src1, src2)
+        self.assertIs(src1, src3)
+
+        uncached = load_kernel_source("cuda", "compute-fp32", use_cache=False)
+        self.assertIsNot(src1, uncached)
+        self.assertEqual(src1, uncached)
+
+        clear_kernel_source_cache()
+        reloaded = load_kernel_source("cuda", "compute-fp32")
+        self.assertIsNot(src1, reloaded)
+        self.assertEqual(src1, reloaded)
+
+    def test_missing_and_corrupt_kernel_raises_kernel_not_found(self) -> None:
         with self.assertRaises(KernelNotFoundError) as ctx_load:
             load_kernel_source("cuda", "compute-fp32", specs={})
         self.assertEqual(ctx_load.exception.exit_code, ExitCode.INIT_ERROR)
 
         with tempfile.TemporaryDirectory() as tmp:
-            cache = RuntimeBinaryCache(Path(tmp))
-            with self.assertRaises(KernelNotFoundError):
+            root = Path(tmp)
+            cache = RuntimeBinaryCache(root / "cache")
+            with self.assertRaises(KernelNotFoundError) as ctx_compile:
                 compile_kernel_runtime("cuda", "compute-fp32", "sm_89", cache=cache, specs={})
+            self.assertEqual(ctx_compile.exception.exit_code, ExitCode.INIT_ERROR)
+
+            # Registered spec whose underlying resource file is missing.
+            with self.assertRaises(KernelNotFoundError) as ctx_missing_file:
+                load_kernel_source("cuda", "compute-fp32", resource_root=root)
+            self.assertEqual(ctx_missing_file.exception.exit_code, ExitCode.INIT_ERROR)
+
+            with self.assertRaises(KernelNotFoundError) as ctx_compile_missing:
+                compile_kernel_runtime(
+                    "cuda", "compute-fp32", "sm_89", cache=cache, resource_root=root
+                )
+            self.assertEqual(ctx_compile_missing.exception.exit_code, ExitCode.INIT_ERROR)
+
+            # Corrupt non-UTF-8 bytes in resource file.
+            bad_file = root / "cuda" / "compute_fp32.cu"
+            bad_file.parent.mkdir(parents=True, exist_ok=True)
+            bad_file.write_bytes(b"\xff\xfe\xfd")
+            with self.assertRaises(KernelNotFoundError) as ctx_bad_utf8:
+                load_kernel_source("cuda", "compute-fp32", resource_root=root)
+            self.assertEqual(ctx_bad_utf8.exception.exit_code, ExitCode.INIT_ERROR)
 
     def test_unsupported_capability_raises_unsupported_kernel_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -56,17 +99,207 @@ class TestEmbedBinary(unittest.TestCase):
                     cache=cache,
                 )
 
-    def test_cache_key_uniqueness_and_readonly_degradation(self) -> None:
-        k1 = compute_memory_cache_key("cuda", "sm_89", "12.4", "compute-fp32", ("-O3",), b"abc")
-        k2 = compute_memory_cache_key("cuda", "sm_80", "12.4", "compute-fp32", ("-O3",), b"abc")
-        k3 = compute_memory_cache_key("cuda", "sm_89", "12.5", "compute-fp32", ("-O3",), b"abc")
-        k4 = compute_memory_cache_key("cuda", "sm_89", "12.4", "compute-fp32", ("-O3",), b"def")
-        self.assertEqual(len({k1, k2, k3, k4}), 4)
+    def test_memory_cache_key_plain_tuple_differentiates_all_dimensions(self) -> None:
+        base = compute_memory_cache_key(
+            "cuda", "sm_89", "12.4", "compute-fp32", ("-O3",), b"kernel_a"
+        )
+        self.assertIsInstance(base, tuple)
+        self.assertEqual(
+            base,
+            ("cuda", "sm_89", "12.4", "compute_fp32", ("-O3",), b"kernel_a"),
+        )
+        # Canonical normalization of workload slug and flag whitespace.
+        canonical_same = compute_memory_cache_key(
+            "cuda", "sm_89", "12.4", "compute_fp32", (" -O3 ", ""), b"kernel_a"
+        )
+        self.assertEqual(base, canonical_same)
 
-        d1 = compute_disk_cache_name("cuda", "sm_89", "12.4", "compute-fp32", 100, ("-O3",))
-        d2 = compute_disk_cache_name("cuda", "sm_80", "12.4", "compute-fp32", 100, ("-O3",))
-        self.assertNotEqual(d1, d2)
+        variants = [
+            base,
+            compute_memory_cache_key("hip", "sm_89", "12.4", "compute-fp32", ("-O3",), b"kernel_a"),
+            compute_memory_cache_key("cuda", "sm_80", "12.4", "compute-fp32", ("-O3",), b"kernel_a"),
+            compute_memory_cache_key("cuda", "sm_89", "12.5", "compute-fp32", ("-O3",), b"kernel_a"),
+            compute_memory_cache_key("cuda", "sm_89", "12.4", "compute-fp64", ("-O3",), b"kernel_a"),
+            compute_memory_cache_key("cuda", "sm_89", "12.4", "compute-fp32", ("-O2",), b"kernel_a"),
+            compute_memory_cache_key("cuda", "sm_89", "12.4", "compute-fp32", ("-O3",), b"kernel_b"),
+        ]
+        self.assertEqual(len(set(variants)), len(variants))
 
+    def test_disk_cache_name_differentiates_dimensions_and_fits_name_max(self) -> None:
+        base = compute_disk_cache_name(
+            "cuda", "sm_89", "12.4", "compute-fp32", 1024, ("-O3",), package_version="0.1.0"
+        )
+        variants = [
+            base,
+            compute_disk_cache_name(
+                "cuda", "sm_89", "12.4", "compute-fp32", 1024, ("-O3",), package_version="0.2.0"
+            ),
+            compute_disk_cache_name(
+                "hip", "sm_89", "12.4", "compute-fp32", 1024, ("-O3",), package_version="0.1.0"
+            ),
+            compute_disk_cache_name(
+                "cuda", "sm_80", "12.4", "compute-fp32", 1024, ("-O3",), package_version="0.1.0"
+            ),
+            compute_disk_cache_name(
+                "cuda", "sm_89", "12.5", "compute-fp32", 1024, ("-O3",), package_version="0.1.0"
+            ),
+            compute_disk_cache_name(
+                "cuda", "sm_89", "12.4", "compute-fp64", 1024, ("-O3",), package_version="0.1.0"
+            ),
+            compute_disk_cache_name(
+                "cuda", "sm_89", "12.4", "compute-fp32", 2048, ("-O3",), package_version="0.1.0"
+            ),
+            compute_disk_cache_name(
+                "cuda", "sm_89", "12.4", "compute-fp32", 1024, ("-O2",), package_version="0.1.0"
+            ),
+        ]
+        self.assertEqual(len(set(variants)), len(variants))
+
+        # Full capability flag matrix + complex arch/driver strings remain safe and < 255 bytes.
+        caps_all = DeviceCapabilities(
+            int64=True,
+            int32=True,
+            int16=True,
+            int8=True,
+            int4=True,
+            fp64=True,
+            fp32=True,
+            fp16=True,
+            fp8=True,
+            fp4=True,
+            bf16=True,
+            tensor_fp32=True,
+            tensor_fp16=True,
+            tensor_bf16=True,
+            tensor_int8=True,
+        ).to_dict()
+        flags_all = tuple(f"-DCROSS_GPU_HAS_{k.upper()}=1" for k in sorted(caps_all))
+        flags_one_off = tuple(
+            f"-DCROSS_GPU_HAS_{k.upper()}={0 if k == 'fp8' else 1}" for k in sorted(caps_all)
+        )
+        name_all = compute_disk_cache_name(
+            "opencl",
+            "Apple M2 / Pro (14.4)",
+            "OpenCL 1.2 (May 19 2026)",
+            "compute-tensor-bf16",
+            4096,
+            flags_all + ("-cl-std=CL3.0", "-DFOO=bar"),
+        )
+        name_one_off = compute_disk_cache_name(
+            "opencl",
+            "Apple M2 / Pro (14.4)",
+            "OpenCL 1.2 (May 19 2026)",
+            "compute-tensor-bf16",
+            4096,
+            flags_one_off + ("-cl-std=CL3.0", "-DFOO=bar"),
+        )
+        self.assertNotEqual(name_all, name_one_off)
+        self.assertLess(len(name_all) + len(".json"), 255)
+        self.assertRegex(name_all, r"^[A-Za-z0-9._-]+$")
+
+    def test_disk_cache_hit_invalidation_and_source_override_behavior(self) -> None:
+        caps = DeviceCapabilities(fp32=True)
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_dir = Path(tmp) / "disk_cache"
+            cache1 = RuntimeBinaryCache(cache_dir)
+            compiled = compile_kernel_runtime(
+                "opencl",
+                "compute-fp32",
+                "gfx1100",
+                capabilities=caps,
+                driver_version="24.10",
+                cache=cache1,
+            )
+            bin_files = sorted(cache_dir.glob("*.bin"))
+            json_files = sorted(cache_dir.glob("*.json"))
+            self.assertEqual(len(bin_files), 1)
+            self.assertEqual(len(json_files), 1)
+
+            # Fresh RuntimeBinaryCache instance reloads directly from disk without recompiling.
+            cache2 = RuntimeBinaryCache(cache_dir)
+            with mock.patch(
+                "cross_gpu.embed_binary._compile_opencl",
+                side_effect=AssertionError("should have hit disk cache"),
+            ):
+                reloaded = compile_kernel_runtime(
+                    "opencl",
+                    "compute-fp32",
+                    "gfx1100",
+                    capabilities=caps,
+                    driver_version="24.10",
+                    cache=cache2,
+                )
+            self.assertEqual(reloaded.binary_bytes, compiled.binary_bytes)
+            self.assertEqual(reloaded.compile_flags, compiled.compile_flags)
+            self.assertEqual(reloaded.entry_point, compiled.entry_point)
+
+            # Truncated .bin artifact is rejected and cleanly rebuilt.
+            bin_files[0].write_bytes(compiled.binary_bytes[:-1])
+            cache3 = RuntimeBinaryCache(cache_dir)
+            rebuilt = compile_kernel_runtime(
+                "opencl",
+                "compute-fp32",
+                "gfx1100",
+                capabilities=caps,
+                driver_version="24.10",
+                cache=cache3,
+            )
+            self.assertEqual(rebuilt.binary_bytes, compiled.binary_bytes)
+
+            # Stale package_version metadata in sidecar .json invalidates the disk entry.
+            meta = json.loads(json_files[0].read_text(encoding="utf-8"))
+            meta["package_version"] = "0.0.0-stale"
+            json_files[0].write_text(json.dumps(meta), encoding="utf-8")
+            cache4 = RuntimeBinaryCache(cache_dir)
+            from cross_gpu.embed_binary import _compile_opencl as real_compile_opencl
+
+            with mock.patch(
+                "cross_gpu.embed_binary._compile_opencl", wraps=real_compile_opencl
+            ) as spy:
+                recompiled = compile_kernel_runtime(
+                    "opencl",
+                    "compute-fp32",
+                    "gfx1100",
+                    capabilities=caps,
+                    driver_version="24.10",
+                    cache=cache4,
+                )
+                self.assertEqual(spy.call_count, 1)
+                self.assertEqual(recompiled.binary_bytes, compiled.binary_bytes)
+
+        # source_override skips disk cache completely while differentiating in-memory entries.
+        with tempfile.TemporaryDirectory() as tmp:
+            override_dir = Path(tmp) / "override_cache"
+            cache = RuntimeBinaryCache(override_dir)
+            c1 = compile_kernel_runtime(
+                "opencl",
+                "compute-fp32",
+                "gfx1100",
+                capabilities=caps,
+                source_override="__kernel void kernel_compute_fp32(void) { /* v1 */ }",
+                cache=cache,
+            )
+            c1_again = compile_kernel_runtime(
+                "opencl",
+                "compute-fp32",
+                "gfx1100",
+                capabilities=caps,
+                source_override="__kernel void kernel_compute_fp32(void) { /* v1 */ }",
+                cache=cache,
+            )
+            c2 = compile_kernel_runtime(
+                "opencl",
+                "compute-fp32",
+                "gfx1100",
+                capabilities=caps,
+                source_override="__kernel void kernel_compute_fp32(void) { /* v2 */ }",
+                cache=cache,
+            )
+            self.assertIs(c1, c1_again)
+            self.assertNotEqual(c1.binary_bytes, c2.binary_bytes)
+            self.assertFalse(override_dir.exists())
+
+    def test_readonly_cache_degradation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             cache = RuntimeBinaryCache(Path(tmp))
             with mock.patch("pathlib.Path.mkdir", side_effect=PermissionError("read-only")):
@@ -87,6 +320,83 @@ class TestEmbedBinary(unittest.TestCase):
                 cache=cache,
             )
             self.assertIs(compiled, cached)
+
+        # Also degrades cleanly when directory exists but file writes fail with PermissionError.
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = RuntimeBinaryCache(Path(tmp))
+            with mock.patch("pathlib.Path.write_bytes", side_effect=PermissionError("ro fs")):
+                compiled = compile_kernel_runtime(
+                    "opencl",
+                    "compute-fp32",
+                    "gfx1100",
+                    capabilities=DeviceCapabilities(fp32=True),
+                    cache=cache,
+                )
+            cached = compile_kernel_runtime(
+                "opencl",
+                "compute-fp32",
+                "gfx1100",
+                capabilities=DeviceCapabilities(fp32=True),
+                cache=cache,
+            )
+            self.assertIs(compiled, cached)
+
+    def test_verify_kernel_resources_catches_missing_empty_symbol_and_orphans(self) -> None:
+        spec = KernelSpec(
+            backend="cuda",
+            workload="compute_fp32",
+            filename="compute_fp32.cu",
+            format="cuda_source",
+            entry_point="kernel_compute_fp32",
+            entry_points=("kernel_compute_fp32",),
+        )
+        specs = {("cuda", "compute_fp32"): spec}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cuda_dir = root / "cuda"
+            cuda_dir.mkdir()
+            (root / "README.md").write_text("# ignored readme\n", encoding="utf-8")
+            (cuda_dir / ".DS_Store").write_bytes(b"ignored")
+
+            # Missing kernel file
+            errs_missing = verify_kernel_resources(specs=specs, resource_root=root)
+            self.assertTrue(any("Missing kernel resource" in e for e in errs_missing), errs_missing)
+
+            # Empty file
+            kpath = cuda_dir / "compute_fp32.cu"
+            kpath.write_text("   \n", encoding="utf-8")
+            errs_empty = verify_kernel_resources(specs=specs, resource_root=root)
+            self.assertTrue(any("empty" in e for e in errs_empty), errs_empty)
+
+            # Missing declared entry point symbol
+            kpath.write_text("extern \"C\" __global__ void other_name(void) {}\n", encoding="utf-8")
+            errs_ep = verify_kernel_resources(specs=specs, resource_root=root)
+            self.assertTrue(any("missing declared entry point" in e for e in errs_ep), errs_ep)
+
+            # Valid kernel passes cleanly
+            kpath.write_text(
+                "extern \"C\" __global__ void kernel_compute_fp32(void) {}\n", encoding="utf-8"
+            )
+            self.assertEqual(verify_kernel_resources(specs=specs, resource_root=root), [])
+
+            # Orphan file under backend dir, orphan file in kernels root, and unknown backend dir
+            (cuda_dir / "orphan_extra.cu").write_text("// orphan\n", encoding="utf-8")
+            (root / "stray.txt").write_text("stray\n", encoding="utf-8")
+            (root / "vulkan").mkdir()
+            errs_orphans = verify_kernel_resources(specs=specs, resource_root=root)
+            self.assertTrue(
+                any("Orphan kernel file" in e and "cuda/orphan_extra.cu" in e for e in errs_orphans),
+                errs_orphans,
+            )
+            self.assertTrue(
+                any("Orphan file in kernels root: stray.txt" in e for e in errs_orphans),
+                errs_orphans,
+            )
+            self.assertTrue(
+                any("Unknown backend kernel directory: vulkan" in e for e in errs_orphans),
+                errs_orphans,
+            )
 
     def test_runtime_compile_error_paths(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -149,6 +459,7 @@ class TestEmbedBinary(unittest.TestCase):
             check=False,
         )
         self.assertEqual(res_verify.returncode, 0, res_verify.stderr)
+        self.assertIn("Verified 90 packaged kernel source(s): OK", res_verify.stdout)
 
         res_list = subprocess.run(
             [sys.executable, "-m", "cross_gpu.embed_binary", "list"],
@@ -157,6 +468,32 @@ class TestEmbedBinary(unittest.TestCase):
             check=False,
         )
         self.assertEqual(res_list.returncode, 0, res_list.stderr)
+        lines = [line for line in res_list.stdout.splitlines() if line.strip()]
+        self.assertEqual(len(lines), 90)
+        for line in lines:
+            self.assertIn("file=", line)
+            self.assertIn("entry_points=", line)
+            self.assertIn("size=", line)
+
+        # Obsolete pack action must no longer be accepted.
+        res_pack = subprocess.run(
+            [sys.executable, "-m", "cross_gpu.embed_binary", "pack"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertNotEqual(res_pack.returncode, 0)
+
+        # Verification failure exits with ExitCode.INIT_ERROR (2).
+        stderr_buf = io.StringIO()
+        with mock.patch(
+            "cross_gpu.embed_binary.verify_kernel_resources",
+            return_value=["cuda:compute_fp32: missing"],
+        ):
+            with mock.patch("sys.stderr", stderr_buf):
+                rc = embed_binary_main(["verify"])
+        self.assertEqual(rc, int(ExitCode.INIT_ERROR))
+        self.assertIn("ERROR: cuda:compute_fp32: missing", stderr_buf.getvalue())
 
     def test_os_standard_cache_directories_and_sandbox_fallback(self) -> None:
         fake_home = Path("/fake/home")
