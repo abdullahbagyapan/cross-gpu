@@ -165,10 +165,14 @@ def parse_duration(value: str, *, allow_zero: bool = False) -> float:
 def format_duration(seconds: float) -> str:
     """Format a duration in seconds cleanly using ms for sub-second values and s otherwise."""
     safe = max(0.0, float(seconds))
+    if safe == 0.0:
+        return "0s"
     if safe < 1.0:
         ms = int(round(safe * 1000.0))
         if ms >= 1000:
             return "1s"
+        if ms == 0:
+            return "<1ms"
         return f"{ms}ms"
     if abs(safe - round(safe)) < 1e-6:
         return f"{int(round(safe))}s"
