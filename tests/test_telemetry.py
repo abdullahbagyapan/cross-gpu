@@ -10,9 +10,9 @@ import time
 import unittest
 from unittest import mock
 
-from cross_gpu.models import GPUDevice, TelemetrySample
-from cross_gpu.telemetry import TelemetrySampler, read_telemetry
-from cross_gpu.telemetry.readers import (
+from src.models import GPUDevice, TelemetrySample
+from src.telemetry import TelemetrySampler, read_telemetry
+from src.telemetry.readers import (
     parse_ioreg_output,
     read_linux_sysfs,
     read_nvml,
@@ -105,7 +105,7 @@ class TestTelemetry(unittest.TestCase):
         self.assertEqual(missing, TelemetrySample())
 
     def test_nvml_reader_never_raises_when_missing(self) -> None:
-        with mock.patch("cross_gpu.telemetry.readers._NVML_CLIENT._ensure_init", return_value=False):
+        with mock.patch("src.telemetry.readers._NVML_CLIENT._ensure_init", return_value=False):
             sample = read_nvml("0000:01:00.0")
             self.assertEqual(sample, TelemetrySample())
 
@@ -140,7 +140,7 @@ class TestTelemetry(unittest.TestCase):
                 out._obj.value = 60  # type: ignore[attr-defined]
                 return 0
 
-        with mock.patch("cross_gpu.telemetry.readers._NVML_CLIENT", FakeClient()):
+        with mock.patch("src.telemetry.readers._NVML_CLIENT", FakeClient()):
             sample = read_nvml("01:00.0")
             self.assertEqual(sample.temperature_c, 64.0)
             self.assertEqual(sample.power_w, 315.5)

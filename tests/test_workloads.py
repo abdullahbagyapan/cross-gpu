@@ -12,29 +12,29 @@ from typing import Any, Sequence
 import unittest
 from unittest import mock
 
-from cross_gpu.backends.base import (
+from src.backends.base import (
     BackendContext,
     BackendPlugin,
     DeviceBuffer,
     HostBuffer,
     KernelModule,
 )
-from cross_gpu.embed_binary import CompiledKernelBinary
-from cross_gpu.exit_codes import (
+from src.embed_binary import CompiledKernelBinary
+from src.exit_codes import (
     BackendHardwareError,
     BackendInitError,
     ExitCode,
     KernelCompilationError,
 )
-from cross_gpu.models import (
+from src.models import (
     BackendBinding,
     BackendDeviceInfo,
     DeviceCapabilities,
     GPUDevice,
     TelemetrySample,
 )
-from cross_gpu.runner import StressRunner
-from cross_gpu.workloads import (
+from src.runner import StressRunner
+from src.workloads import (
     ALL_EXECUTOR_CLASSES,
     BANDWIDTH_DISCRETE_CAP_BYTES,
     BANDWIDTH_UNIFIED_CAP_BYTES,
@@ -735,9 +735,9 @@ class TestAll20ExecutorsEndToEndAndFaultInjection(unittest.TestCase):
         )
         # Keep calibration fast for the nonlinear dp4a mock path while still exercising real calibration.
         with mock.patch(
-            "cross_gpu.workloads.compute_scalar.calibrate_iterations", return_value=2
+            "src.workloads.compute_scalar.calibrate_iterations", return_value=2
         ), mock.patch(
-            "cross_gpu.workloads.memory.calibrate_iterations", return_value=2
+            "src.workloads.memory.calibrate_iterations", return_value=2
         ):
             report = runner.run()
 
@@ -777,9 +777,9 @@ class TestAll20ExecutorsEndToEndAndFaultInjection(unittest.TestCase):
                     extra={"warp_size": 16, "max_threads_per_block": 16},
                 )
                 with mock.patch(
-                    "cross_gpu.workloads.compute_scalar.calibrate_iterations", return_value=2
+                    "src.workloads.compute_scalar.calibrate_iterations", return_value=2
                 ), mock.patch(
-                    "cross_gpu.workloads.memory.calibrate_iterations", return_value=1
+                    "src.workloads.memory.calibrate_iterations", return_value=1
                 ):
                     report = StressRunner(
                         devices=[gpu],
@@ -808,7 +808,7 @@ class TestAll20ExecutorsEndToEndAndFaultInjection(unittest.TestCase):
         backend = _SimulatingMockBackend(backend_name="cuda")
 
         with mock.patch(
-            "cross_gpu.workloads.compute_scalar.calibrate_iterations", return_value=2
+            "src.workloads.compute_scalar.calibrate_iterations", return_value=2
         ):
             # --test all skips unsupported compute-fp8 without triggering INIT_ERROR (2).
             rep_all = StressRunner(
@@ -881,7 +881,7 @@ class TestAll20ExecutorsEndToEndAndFaultInjection(unittest.TestCase):
         events: list[dict[str, Any]] = []
 
         with mock.patch(
-            "cross_gpu.workloads.compute_scalar.calibrate_iterations", return_value=2
+            "src.workloads.compute_scalar.calibrate_iterations", return_value=2
         ):
             runner = StressRunner(
                 devices=[gpu],
@@ -912,7 +912,7 @@ class TestAll20ExecutorsEndToEndAndFaultInjection(unittest.TestCase):
         # SIGINT / request_stop() mid-run exits promptly and frees all buffers/modules cleanly.
         backend2 = _SimulatingMockBackend(backend_name="cuda", step_sleep_s=0.02)
         with mock.patch(
-            "cross_gpu.workloads.compute_scalar.calibrate_iterations", return_value=2
+            "src.workloads.compute_scalar.calibrate_iterations", return_value=2
         ):
             runner2 = StressRunner(
                 devices=[gpu],
@@ -986,7 +986,7 @@ class TestAll20ExecutorsEndToEndAndFaultInjection(unittest.TestCase):
                     extra={"warp_size": 16, "max_threads_per_block": 16},
                 )
                 with mock.patch(
-                    "cross_gpu.workloads.compute_scalar.calibrate_iterations", return_value=2
+                    "src.workloads.compute_scalar.calibrate_iterations", return_value=2
                 ):
                     rep = StressRunner(
                         devices=[gpu],

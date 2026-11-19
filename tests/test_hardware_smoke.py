@@ -6,11 +6,11 @@ from __future__ import annotations
 import os
 import unittest
 
-from cross_gpu.backends.registry import enumerate_all_backend_devices
-from cross_gpu.dedup import deduplicate_devices
-from cross_gpu.exit_codes import ExitCode
-from cross_gpu.runner import StressRunner
-from cross_gpu.workloads import list_workload_names
+from src.backends.registry import enumerate_all_backend_devices
+from src.dedup import deduplicate_devices
+from src.exit_codes import ExitCode
+from src.runner import StressRunner
+from src.workloads import list_workload_names
 
 
 @unittest.skipUnless(

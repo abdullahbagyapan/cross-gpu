@@ -7,16 +7,16 @@ import copy
 import threading
 import unittest
 
-from cross_gpu.backends.base import (
+from src.backends.base import (
     BackendContext,
     BackendPlugin,
     DeviceBuffer,
     HostBuffer,
     KernelModule,
 )
-from cross_gpu.embed_binary import CompiledKernelBinary
-from cross_gpu.exit_codes import BackendHardwareError, ExitCode
-from cross_gpu.models import (
+from src.embed_binary import CompiledKernelBinary
+from src.exit_codes import BackendHardwareError, ExitCode
+from src.models import (
     BackendBinding,
     BackendDeviceInfo,
     DeviceCapabilities,
@@ -25,8 +25,8 @@ from cross_gpu.models import (
     TelemetrySample,
     VerificationResult,
 )
-from cross_gpu.runner import StressRunner
-from cross_gpu.workloads import (
+from src.runner import StressRunner
+from src.workloads import (
     WORKLOAD_REGISTRY,
     WorkloadEntry,
     WorkloadExecutionContext,
@@ -281,7 +281,7 @@ class TestRunner(unittest.TestCase):
 
     def test_short_200ms_run_terminates_promptly_and_filters_empty_telemetry(self) -> None:
         import time as _time
-        from cross_gpu.workloads.common import calibrate_iterations
+        from src.workloads.common import calibrate_iterations
 
         # Sub-second calibration caps target below duration_s to avoid overshoot
         mock_clock = {"t": 0.0}

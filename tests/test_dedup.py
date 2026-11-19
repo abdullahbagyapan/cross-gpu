@@ -5,14 +5,14 @@ from __future__ import annotations
 
 import unittest
 
-from cross_gpu.dedup import (
+from src.dedup import (
     deduplicate_devices,
     normalize_pci_bdf,
     normalize_uuid,
     resolve_device_backend,
 )
-from cross_gpu.exit_codes import BackendInitError
-from cross_gpu.models import BackendDeviceInfo, DeviceCapabilities
+from src.exit_codes import BackendInitError
+from src.models import BackendDeviceInfo, DeviceCapabilities
 
 
 def _make_dev(

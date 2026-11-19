@@ -12,7 +12,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from cross_gpu.backends.base import (
+from src.backends.base import (
     BackendContext,
     BackendPlugin,
     DeviceBuffer,
@@ -20,8 +20,8 @@ from cross_gpu.backends.base import (
     KernelModule,
     check_linux_render_node_hint,
 )
-from cross_gpu.backends.registry import KNOWN_BACKENDS
-from cross_gpu.cli import (
+from src.backends.registry import KNOWN_BACKENDS
+from src.cli import (
     build_parser,
     format_duration,
     format_progress_prefix,
@@ -32,15 +32,15 @@ from cross_gpu.cli import (
     parse_test_arg,
     resolve_output_format,
 )
-from cross_gpu.exit_codes import BackendHardwareError, ExitCode
-from cross_gpu.models import (
+from src.exit_codes import BackendHardwareError, ExitCode
+from src.models import (
     BackendBinding,
     BackendDeviceInfo,
     DeviceCapabilities,
     GPUDevice,
     WorkloadResult,
 )
-from cross_gpu.workloads import (
+from src.workloads import (
     WORKLOAD_REGISTRY,
     explain_unsupported_workload,
     list_workload_names,
@@ -388,7 +388,7 @@ class TestCLI(unittest.TestCase):
                 self._cb = event_callback
 
             def run(self):
-                from cross_gpu.runner import RunReport
+                from src.runner import RunReport
 
                 # Empty/unusable tick -> must be suppressed in BOTH text and json
                 self._cb(
@@ -458,7 +458,7 @@ class TestCLI(unittest.TestCase):
         for cmd in (
             [str(exe), "--help"],
             [str(exe), "--version"],
-            [sys.executable, "-m", "cross_gpu", "--version"],
+            [sys.executable, "-m", "src", "--version"],
         ):
             res = subprocess.run(cmd, capture_output=True, text=True, check=False)
             self.assertEqual(res.returncode, 0, res.stderr)
@@ -553,7 +553,7 @@ class TestCLI(unittest.TestCase):
 
         mock_plugins = [_MockCuda(), _MockOpenCL(), _MockUnavailableMetal()]
         with mock.patch(
-            "cross_gpu.backends.registry.discover_backends",
+            "src.backends.registry.discover_backends",
             return_value=mock_plugins,
         ):
             for cmd in ("list", "info"):

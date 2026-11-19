@@ -16,7 +16,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from cross_gpu.embed_binary import (
+from src.embed_binary import (
     KERNEL_SPECS,
     KernelSpec,
     RuntimeBinaryCache,
@@ -31,13 +31,13 @@ from cross_gpu.embed_binary import (
     load_kernel_source,
     verify_kernel_resources,
 )
-from cross_gpu.exit_codes import (
+from src.exit_codes import (
     ExitCode,
     KernelCompilationError,
     KernelNotFoundError,
     UnsupportedKernelError,
 )
-from cross_gpu.models import DeviceCapabilities
+from src.models import DeviceCapabilities
 
 
 class TestEmbedBinary(unittest.TestCase):
@@ -221,7 +221,7 @@ class TestEmbedBinary(unittest.TestCase):
             # Fresh RuntimeBinaryCache instance reloads directly from disk without recompiling.
             cache2 = RuntimeBinaryCache(cache_dir)
             with mock.patch(
-                "cross_gpu.embed_binary._compile_opencl",
+                "src.embed_binary._compile_opencl",
                 side_effect=AssertionError("should have hit disk cache"),
             ):
                 reloaded = compile_kernel_runtime(
@@ -254,10 +254,10 @@ class TestEmbedBinary(unittest.TestCase):
             meta["package_version"] = "0.0.0-stale"
             json_files[0].write_text(json.dumps(meta), encoding="utf-8")
             cache4 = RuntimeBinaryCache(cache_dir)
-            from cross_gpu.embed_binary import _compile_opencl as real_compile_opencl
+            from src.embed_binary import _compile_opencl as real_compile_opencl
 
             with mock.patch(
-                "cross_gpu.embed_binary._compile_opencl", wraps=real_compile_opencl
+                "src.embed_binary._compile_opencl", wraps=real_compile_opencl
             ) as spy:
                 recompiled = compile_kernel_runtime(
                     "opencl",
@@ -405,7 +405,7 @@ class TestEmbedBinary(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             cache = RuntimeBinaryCache(Path(tmp))
             with mock.patch(
-                "cross_gpu.embed_binary.load_shared_library",
+                "src.embed_binary.load_shared_library",
                 side_effect=OSError("missing libnvrtc"),
             ):
                 with self.assertRaises(KernelCompilationError) as ctx:
@@ -419,7 +419,7 @@ class TestEmbedBinary(unittest.TestCase):
                 self.assertIn("missing libnvrtc", ctx.exception.compiler_log)
 
             with mock.patch(
-                "cross_gpu.embed_binary.load_shared_library",
+                "src.embed_binary.load_shared_library",
                 side_effect=OSError("missing libhiprtc"),
             ):
                 with self.assertRaises(KernelCompilationError) as ctx:
@@ -456,7 +456,7 @@ class TestEmbedBinary(unittest.TestCase):
 
     def test_cli_verify_and_list(self) -> None:
         res_verify = subprocess.run(
-            [sys.executable, "-m", "cross_gpu.embed_binary", "verify"],
+            [sys.executable, "-m", "src.embed_binary", "verify"],
             capture_output=True,
             text=True,
             check=False,
@@ -465,7 +465,7 @@ class TestEmbedBinary(unittest.TestCase):
         self.assertIn("Verified 90 packaged kernel source(s): OK", res_verify.stdout)
 
         res_list = subprocess.run(
-            [sys.executable, "-m", "cross_gpu.embed_binary", "list"],
+            [sys.executable, "-m", "src.embed_binary", "list"],
             capture_output=True,
             text=True,
             check=False,
@@ -480,17 +480,17 @@ class TestEmbedBinary(unittest.TestCase):
 
         # Obsolete pack action must no longer be accepted.
         res_pack = subprocess.run(
-            [sys.executable, "-m", "cross_gpu.embed_binary", "pack"],
+            [sys.executable, "-m", "src.embed_binary", "pack"],
             capture_output=True,
             text=True,
             check=False,
         )
-        self.assertNotEqual(res_pack.returncode, 0)
+        self.assertEqual(res_pack.returncode, 2)
 
         # Verification failure exits with ExitCode.INIT_ERROR (2).
         stderr_buf = io.StringIO()
         with mock.patch(
-            "cross_gpu.embed_binary.verify_kernel_resources",
+            "src.embed_binary.verify_kernel_resources",
             return_value=["cuda:compute_fp32: missing"],
         ):
             with mock.patch("sys.stderr", stderr_buf):
@@ -611,12 +611,12 @@ class TestEmbedBinary(unittest.TestCase):
                 )
                 self.assertEqual(len(list(cache_dir.glob("*.bin"))), 1)
 
-            from cross_gpu.embed_binary import _compile_opencl as real_compile_opencl
+            from src.embed_binary import _compile_opencl as real_compile_opencl
 
             with mock.patch.dict("os.environ", {"CROSS_GPU_NO_CACHE": "TRUE"}, clear=False):
                 bypass_cache = RuntimeBinaryCache(cache_dir)
                 with mock.patch(
-                    "cross_gpu.embed_binary._compile_opencl", wraps=real_compile_opencl
+                    "src.embed_binary._compile_opencl", wraps=real_compile_opencl
                 ) as spy:
                     compile_kernel_runtime(
                         "opencl",
@@ -877,7 +877,7 @@ class TestPackagedKernels(unittest.TestCase):
         "Live host GPU tests skipped unless CROSS_GPU_HW_TESTS=1 is set",
     )
     def test_host_metal_live_compile_and_golden_execution(self) -> None:
-        from cross_gpu.backends.metal_backend import MetalBackend
+        from src.backends.metal_backend import MetalBackend
 
         backend = MetalBackend()
         if not backend.is_available():
@@ -1082,7 +1082,7 @@ class TestPackagedKernels(unittest.TestCase):
         if sys.platform == "darwin":
             self.skipTest("Apple OpenCL is deprecated and does not support modern compute pipelines")
 
-        from cross_gpu.backends.opencl_backend import OpenCLBackend
+        from src.backends.opencl_backend import OpenCLBackend
 
         backend = OpenCLBackend()
         if not backend.is_available():
@@ -1216,8 +1216,8 @@ class TestPackagedKernels(unittest.TestCase):
         "Live host GPU tests skipped unless CROSS_GPU_HW_TESTS=1 is set",
     )
     def test_host_nvrtc_or_hiprtc_compile_when_present(self) -> None:
-        from cross_gpu.backends.cuda_backend import CudaBackend
-        from cross_gpu.backends.hip_backend import HipBackend
+        from src.backends.cuda_backend import CudaBackend
+        from src.backends.hip_backend import HipBackend
 
         compiled_any = False
         with tempfile.TemporaryDirectory() as tmp:

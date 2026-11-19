@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import unittest
 
-from cross_gpu.exit_codes import (
+from src.exit_codes import (
     BackendHardwareError,
     BackendInitError,
     ComputeError,
