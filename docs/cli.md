@@ -1,10 +1,10 @@
 # `cross-gpu` CLI Reference
 
-`cross-gpu` provides deterministic device discovery, hardware inspection, and GPU stress testing with strict stream hygiene and operator-friendly diagnostics.
+Complete command-line interface, output schemas, exit codes, and operational recipes for `cross-gpu`.
 
 ---
 
-## 1. Commands & Synopsis
+## 1. Synopsis
 
 ```sh
 cross-gpu [-v|--verbose] list [--format text|json] [--json] [-v|--verbose]
@@ -17,85 +17,260 @@ cross-gpu --help
 cross-gpu --version
 ```
 
-### Examples
+The CLI can also be invoked directly as a Python module: `python3 -m cross_gpu <command> [options]`.
 
-```sh
-cross-gpu list
-cross-gpu info --json
-cross-gpu run --device 0 --test compute-fp32,memory-pattern --warmup 5s --duration 30s
-cross-gpu run --device 0 --test compute-fp32 --warmup 250ms --duration 500ms
-cross-gpu run --backend opencl --test all --duration 60s --json
+---
+
+## 2. Subcommands & Options
+
+### Global Options
+
+| Flag | Default | Description |
+|---|---|---|
+| `--help`, `-h` | — | Print usage and copy-pasteable `Examples:` epilog to `stdout` and exit `0`. |
+| `--version` | — | Print `cross-gpu <version>` to `stdout` and exit `0`. |
+| `-v`, `--verbose` | off | Stream structured `[verbose]` diagnostics (SONAME/framework probes, deduplication decisions, kernel lookups, cache hits/misses, compile flags, and compiler logs) exclusively to `stderr`. Accepted before or after the subcommand. |
+
+### Shared Formatting Options (`list`, `info`, `run`)
+
+| Flag | Default | Description |
+|---|---|---|
+| `--format text\|json` | `text` | Output format. `list` and `info` emit a single JSON object in `json` mode; `run` emits streaming newline-delimited JSON (NDJSON). |
+| `--json` | off | Convenience alias for `--format json`. Combining `--format text` with `--json` is an error and exits with `ExitCode.USAGE_ERROR (1)`. |
+
+### `run` Options
+
+| Flag | Default | Description |
+|---|---|---|
+| `--device all\|N` | `all` | Target all detected physical GPUs (`all`) or a single canonical non-negative integer index `N` from `cross-gpu list`. |
+| `--test TEST\|all` | `all` | Single canonical workload name, comma-separated list (e.g., `compute-fp32,memory-pattern`), or `all` (all 20 workloads). Duplicate entries in a list are deduplicated preserving order; combining `all` with specific names exits `1`. |
+| `--duration TIME` | `60s` | Timed measurement duration per workload. Accepts suffixes `ms`, `s`, `m`, and `h` (case-insensitive, e.g., `250ms`, `500ms`, `1.5s`, `5m`, `1h`). Must be strictly `> 0` (`0ms`, `0s`, negative, or malformed inputs exit `1`). |
+| `--warmup [TIME]` | `0s` | Pre-measurement warmup duration per workload. Three edge-case rules: **omitted** -> `0s` (no warmup); **bare `--warmup`** (no value, including right before another flag like `--warmup --json`) -> `5s`; **explicit value** (`--warmup 10s`, `--warmup=250ms`, `--warmup 0ms`) -> parsed duration (`>= 0`). |
+| `--backend auto\|PLUGIN` | `auto` | `auto` selects each GPU's highest-priority backend (native `100` over `opencl` `50`), or explicitly force `cuda`, `hip`, `levelzero`, `metal`, or `opencl`. |
+
+### Typo Hints (`difflib`)
+
+Invalid subcommands, unknown `--backend` names, and unknown `--test` tokens (including individual elements inside comma-separated lists) emit `difflib` suggestions (`n=3`, `cutoff=0.5`) to `stderr` and exit with `ExitCode.USAGE_ERROR (1)`:
+
+```text
+cross-gpu: error: unknown command 'lsit'. Did you mean: list?
+cross-gpu: error: unknown backend 'cdua'. Did you mean: cuda?
+cross-gpu: error: unknown test 'fp32'. Did you mean: compute-fp32?; unknown test 'mem-sweep'. Did you mean: memory-sweep?
 ```
 
-### Duration Syntax (`--duration`, `--warmup`)
+---
 
-Durations accept suffixes `ms`, `s`, `m`, and `h` (case-insensitive, e.g., `250ms`, `500ms`, `1.5s`, `5m`, `1h`):
+## 3. Stream Hygiene (`stdout` vs. `stderr`)
 
-- `--duration` must be strictly `> 0` (invalid values such as `0ms`, `-100ms`, `ms`, or `10mms` exit with `ExitCode.USAGE_ERROR (1)`).
-- `--warmup` accepts `0ms` / `0s` when explicitly passed; bare `--warmup` defaults to `5s`; omitting `--warmup` defaults to `0s`.
-- Sub-second runs (`< 1s`) automatically cap batch calibration targets below the requested duration and wake the telemetry thread immediately on completion.
+- **`stdout`** is strictly reserved for formatted command output (`text` tables/telemetry, JSON/NDJSON payloads, `--help`, `--version`).
+- **`stderr`** receives all errors, per-backend discovery reasons when zero GPUs or a requested backend are unavailable (including Linux `/dev/dri/renderD*` and `/dev/kfd` permission hints), compiler logs, and `-v`/`--verbose` diagnostics.
+- `cross-gpu list --json -v`, `cross-gpu info --json -v`, and `cross-gpu run --json -v` always produce **100% valid JSON/NDJSON on `stdout`**.
 
 ---
 
-## 2. Strict `stdout` / `stderr` Separation & `--verbose` (`-v`)
+## 4. Exit Codes & Multi-GPU Aggregation
 
-- **`stdout` is strictly reserved for command output:** formatted `text` tables/telemetry, valid JSON (`list`/`info`), valid NDJSON (`run`), `--help`, and `--version`.
-- **`stderr` is strictly reserved for diagnostics:** CLI errors, per-backend unavailability reasons (including Linux `/dev/dri/renderD*` and `/dev/kfd` permission hints when zero GPUs or a requested backend are unavailable), compiler diagnostics, and `-v`/`--verbose` traces.
-- Combining `--json` with `-v`/`--verbose` (e.g., `cross-gpu list --json -v`, `cross-gpu info --json -v`, `cross-gpu run --json -v`) always emits **100% valid JSON/NDJSON on `stdout`** while streaming structured `[verbose]` diagnostics to `stderr`:
-  - Shared library SONAME and macOS framework probes (`libcuda.so.1`, `libamdhip64.so.6`, `libze_loader.so.1`, `Metal.framework`, `libOpenCL.so.1`).
-  - Physical GPU deduplication decisions (matched PCIe BDF, UUID/`registryID`, or fallback fingerprint, and priority winner).
-  - `importlib.resources` kernel lookups, disk/in-memory cache hits and misses, compile flags, and full backend compiler logs.
+Exit codes are ordered strictly by ascending severity and aggregated across all targeted devices and workloads using `max(codes)`:
 
----
+| Code | Name | Condition |
+|---|---|---|
+| `0` | `SUCCESS` | All executed workloads passed without compute or hardware faults. (During `--test all`, unsupported workloads on a device are skipped with `0` unless *every* workload on every selected device is unsupported.) |
+| `1` | `USAGE_ERROR` | Invalid CLI arguments, unknown subcommands/tests/backends, malformed durations, or conflicting `--format text --json`. |
+| `2` | `INIT_ERROR` | No compatible GPU/backend found, requested `--device` or `--backend` unavailable, context creation failed, kernel missing/corrupt, runtime compilation failed, or an explicitly requested `--test` is unsupported on all targeted devices. |
+| `3` | `COMPUTE_ERROR` | Numerical/bitwise golden verification mismatch, silent data corruption (SDC), unexpected `NaN`/`Inf`, or VRAM pattern/sweep error (`error_count > 0`). |
+| `4` | `HARDWARE_ERROR` | Device-lost error, GPU hang/timeout/reset, uncorrectable ECC/NVLink fault, illegal address/instruction, or fatal thermal fault. |
 
-## 3. Typo Hints, Progress Display & Skip Reasons
-
-- **`difflib` Typo Suggestions:** Unknown subcommands, `--backend` plugin names, and `--test` values (including individual tokens inside comma-separated lists like `--test fp32,mem-sweep`) exit with `ExitCode.USAGE_ERROR (1)` and print close suggestions on `stderr`:
-  - `cross-gpu: error: unknown command 'lsit'. Did you mean: list?`
-  - `cross-gpu: error: unknown backend 'cdua'. Did you mean: cuda?`
-  - `cross-gpu: error: unknown test 'fp32'. Did you mean: compute-fp32?`
-- **`text`-Mode Progress, Filtered Telemetry & Summary Tally:**
-  - Live 1 Hz telemetry and completion lines include zero-padded workload counters and elapsed/total time, displaying milliseconds for sub-second runs:
-    - Sub-second run: `[01/04 compute-fp32 | 250ms/500ms]`
-    - Warmup phase: `[04/20 compute-fp32 | warmup 3s/5s]`
-    - Timed phase: `[04/20 compute-fp32 | 18s/60s]`
-  - Live telemetry omits all unavailable/unusable sensors (never printing `N/A` in `text` mode or `null` keys in JSON/NDJSON `"metrics"`); ticks with zero usable sensors are suppressed completely. See [telemetry.md](telemetry.md).
-  - Runs end with an aligned summary table and a final tally line reporting `passed`, `failed`, `unsupported`, and `hardware_error` counts alongside the resolved exit code.
-- **Explicit Unsupported Reasons:** Every workload marked `status="unsupported"` includes a specific `reason` string in both `text` output and JSON/NDJSON `workload_result` events (for example, `requires CUDA SM >= 8.9 (detected SM 8.6)`, `Metal lacks native fp64`, or `OpenCL device missing cl_khr_fp16 extension`).
+Example: if GPU 0 encounters `COMPUTE_ERROR (3)` and GPU 1 encounters `HARDWARE_ERROR (4)`, the process exits with `max(3, 4) = 4`.
 
 ---
 
-## 4. Environment Variables
+## 5. Output Formats & Verified Examples
+
+### `cross-gpu list` (`text`)
+
+```text
+INDEX  NAME      VENDOR  VRAM       ACTIVE  BACKENDS      ID / BDF
+-----  --------  ------  ---------  ------  ------------  --------------
+0      Apple M2  Apple   11.84 GiB  metal   metal,opencl  reg:0x1000003e8
+```
+
+### `cross-gpu list --json`
+
+Single JSON document written to `stdout`:
+
+```json
+{
+  "devices": [
+    {
+      "index": 0,
+      "name": "Apple M2",
+      "vendor": "Apple",
+      "active_backend": "metal",
+      "available_backends": [
+        "metal",
+        "opencl"
+      ],
+      "total_memory_bytes": 12713115648,
+      "compute_units": 10,
+      "pci_bdf": null,
+      "uuid": null,
+      "registry_id": 4294968296
+    }
+  ]
+}
+```
+
+### `cross-gpu info --json`
+
+Single JSON document exposing top-level deduplicated hardware properties, capability flags, and every bound backend descriptor:
+
+```json
+{
+  "devices": [
+    {
+      "index": 0,
+      "name": "Apple M2",
+      "vendor": "Apple",
+      "vendor_id": "0x106b",
+      "architecture": "applegpu_g14g",
+      "compute_capability": "metal-3",
+      "active_backend": "metal",
+      "available_backends": [
+        "metal",
+        "opencl"
+      ],
+      "total_memory_bytes": 12713115648,
+      "free_memory_bytes": 12713050112,
+      "compute_units": 10,
+      "driver_version": "345.20.4",
+      "pci_bdf": null,
+      "uuid": null,
+      "registry_id": 4294968296,
+      "capabilities": {
+        "fp64": false,
+        "fp32": true,
+        "fp16": true,
+        "bf16": false,
+        "fp8": false,
+        "fp4": false,
+        "int64": true,
+        "int32": true,
+        "int16": true,
+        "int8": true,
+        "int4": false,
+        "tensor_fp32": true,
+        "tensor_fp16": true,
+        "tensor_bf16": false,
+        "tensor_int8": false
+      },
+      "backends": [
+        {
+          "backend": "metal",
+          "priority": 100,
+          "backend_device_index": 0,
+          "name": "Apple M2",
+          "vendor": "Apple",
+          "vendor_id": "0x106b",
+          "architecture": "applegpu_g14g",
+          "compute_capability": "metal-3",
+          "total_memory_bytes": 12713115648,
+          "free_memory_bytes": 12713050112,
+          "compute_units": 10,
+          "driver_version": "345.20.4",
+          "pci_bdf": null,
+          "uuid": null,
+          "registry_id": 4294968296,
+          "capabilities": {
+            "fp64": false,
+            "fp32": true,
+            "fp16": true,
+            "bf16": false,
+            "fp8": false,
+            "fp4": false,
+            "int64": true,
+            "int32": true,
+            "int16": true,
+            "int8": true,
+            "int4": false,
+            "tensor_fp32": true,
+            "tensor_fp16": true,
+            "tensor_bf16": false,
+            "tensor_int8": false
+          },
+          "extra": {
+            "has_unified_memory": true,
+            "is_low_power": false,
+            "max_buffer_length": 9534832640
+          }
+        }
+      ]
+    }
+  ]
+}
+```
+
+### `cross-gpu run` (`text`)
+
+Live 1 Hz telemetry rows include zero-padded workload progress (`ms` for `< 1s`, `s` for `>= 1s`) and display **only** usable sensors (never `N/A` placeholders; ticks with zero usable sensors are suppressed). Unsupported workloads always display a concrete reason, followed by an aligned summary table and final tally:
+
+```text
+Starting cross-gpu run on [0:Apple M2 (metal)] | tests=2 duration=500ms warmup=200ms
+[01/02 compute-fp32 | warmup 15ms/200ms] dev=0 | GPU 48%
+[01/02 compute-fp32 | 500ms/500ms] dev=0 status=pass rate=3135.89 GFLOP/s
+[02/02 compute-fp64 | 0ms/500ms] dev=0 status=unsupported (Metal lacks native fp64)
+
+Summary:
+DEV  BACKEND  WORKLOAD      STATUS       RATE             TOTAL          ERR  TIME   EXIT  REASON
+---  -------  ------------  -----------  ---------------  -------------  ---  -----  ----  -----------------------
+0    metal    compute-fp32  pass         3135.89 GFLOP/s  1587.39 GFLOP  0    506ms  0     -
+0    metal    compute-fp64  unsupported  N/A              N/A            0    0.00s  2     Metal lacks native fp64
+Tally: passed=1 failed=0 unsupported=1 hardware_error=0 | Exit Code: 2 (INIT_ERROR)
+```
+
+### `cross-gpu run --json` (Streaming NDJSON)
+
+One JSON object per line (`run_start`, 1 Hz `telemetry` with usable-only `metrics`, `workload_result`, and final `run_summary`). Every `unsupported` result includes a concrete `"reason"` field:
+
+```json
+{"type": "run_start", "timestamp": 1795052010.683784, "devices": [{"index": 0, "name": "Apple M2", "backend": "metal"}], "workloads": ["compute-fp32", "compute-fp64"], "duration_s": 0.5, "warmup_s": 0.0, "backend": "auto"}
+{"type": "telemetry", "timestamp": 1795052010.706361, "elapsed_s": 0.0, "phase": "run", "device": 0, "workload": "compute-fp32", "workload_index": 1, "workload_total": 2, "phase_elapsed_s": 0.016, "phase_duration_s": 0.5, "metrics": {"gpu_util_pct": 23.0}}
+{"type": "workload_result", "workload_index": 1, "workload_total": 2, "target_duration_s": 0.5, "device": 0, "device_name": "Apple M2", "backend": "metal", "workload": "compute-fp32", "category": "compute-fp", "status": "pass", "duration_s": 0.500152, "rate": 3108.7119, "rate_unit": "GFLOP/s", "total": 1554.8285, "total_unit": "GFLOP", "errors": 0, "message": "", "exit_code": 0}
+{"type": "workload_result", "workload_index": 2, "workload_total": 2, "target_duration_s": 0.5, "device": 0, "device_name": "Apple M2", "backend": "metal", "workload": "compute-fp64", "category": "compute-fp", "status": "unsupported", "duration_s": 0.0, "rate": null, "rate_unit": "GFLOP/s", "total": null, "total_unit": "GFLOP", "errors": 0, "message": "Metal lacks native fp64", "reason": "Metal lacks native fp64", "exit_code": 2}
+{"type": "run_summary", "exit_code": 2, "interrupted": false, "total_workloads": 2, "results": [{"device": 0, "device_name": "Apple M2", "backend": "metal", "workload": "compute-fp32", "category": "compute-fp", "status": "pass", "duration_s": 0.500152, "rate": 3108.7119, "rate_unit": "GFLOP/s", "total": 1554.8285, "total_unit": "GFLOP", "errors": 0, "message": "", "exit_code": 0}, {"device": 0, "device_name": "Apple M2", "backend": "metal", "workload": "compute-fp64", "category": "compute-fp", "status": "unsupported", "duration_s": 0.0, "rate": null, "rate_unit": "GFLOP/s", "total": null, "total_unit": "GFLOP", "errors": 0, "message": "Metal lacks native fp64", "reason": "Metal lacks native fp64", "exit_code": 2}]}
+```
+
+---
+
+## 6. Operational Recipes
+
+```sh
+# 1. Single-GPU thermal burn-in with 10s warmup and 10m duration
+cross-gpu run --device 0 --test compute-fp32,memory-pattern,memory-sweep --warmup 10s --duration 10m
+
+# 2. Sub-second CI smoke check extracting pass rates via jq (diagnostics isolated on stderr)
+CROSS_GPU_NO_CACHE=1 cross-gpu run --test compute-fp32 --warmup 250ms --duration 500ms --json -v \
+  | jq -r 'select(.type == "workload_result") | "\(.device) \(.workload) \(.status) \(.rate) \(.rate_unit)"'
+
+# 3. Force OpenCL instead of auto-selected native backend (CUDA/HIP/Level Zero/Metal)
+cross-gpu run --backend opencl --test all --duration 60s --json
+
+# 4. Warmup calibration with default 5s warmup (bare --warmup before another flag)
+cross-gpu run --device all --test compute-tensor-fp16 --warmup --duration 30s
+```
+
+---
+
+## 7. Environment Variables & Shell Completions
 
 | Variable | Effect |
 |---|---|
-| `XDG_CACHE_HOME` | On Linux, stores compiled kernel cache files under `$XDG_CACHE_HOME/cross-gpu` (defaulting to `~/.cache/cross-gpu`). On macOS, defaults to `~/Library/Caches/cross-gpu` unless an absolute `XDG_CACHE_HOME` is explicitly set. |
-| `CROSS_GPU_NO_CACHE` | When set to a truthy value (`1`, `true`, `yes`, case-insensitive), completely bypasses disk cache reads and writes (in-memory caching only) for ephemeral containers, CI, and read-only chroots. |
-| `CROSS_GPU_CACHE_DIR` | Explicitly overrides the disk cache directory on any platform (unless `CROSS_GPU_NO_CACHE` is truthy). |
+| `XDG_CACHE_HOME` | Stores compiled kernel cache files under `$XDG_CACHE_HOME/cross-gpu` when set to an absolute path (on both Linux and macOS). Defaults to `~/.cache/cross-gpu` on Linux and `~/Library/Caches/cross-gpu` on macOS. |
+| `CROSS_GPU_NO_CACHE` | When set to `1`, `true`, or `yes` (case-insensitive), completely bypasses disk cache reads and writes (in-memory caching only). |
+| `CROSS_GPU_CACHE_DIR` | Explicitly overrides the disk cache directory on any platform (ignored when `CROSS_GPU_NO_CACHE` is truthy). |
 | `LD_LIBRARY_PATH` / `DYLD_LIBRARY_PATH` | Honored by the OS dynamic linker when probing versioned SONAMEs (`libcuda.so.1`, `libnvrtc.so.12`, `libamdhip64.so.6`, `libze_loader.so.1`, `libOpenCL.so.1`, `libnvidia-ml.so.1`). |
 
----
+Static completions are installed by `make install` (see [packaging.md](packaging.md)):
 
-## 5. Shell Completions
-
-Static, zero-dependency completion scripts are shipped under `completions/` and installed by `make install`:
-
-| Shell | Source File | FHS Install Path (`PREFIX ?= /usr/local`) |
-|---|---|---|
-| Bash | `completions/cross-gpu.bash` | `$(PREFIX)/share/bash-completion/completions/cross-gpu` |
-| Zsh | `completions/_cross-gpu` | `$(PREFIX)/share/zsh/site-functions/_cross-gpu` |
-| Fish | `completions/cross-gpu.fish` | `$(PREFIX)/share/fish/vendor_completions.d/cross-gpu.fish` |
-
----
-
-## 6. Deterministic Exit Codes
-
-Exit codes are ordered by ascending severity and aggregated across devices and workloads via `max(codes)`:
-
-| Code | Name | Meaning |
-|---|---|---|
-| `0` | `SUCCESS` | All executed workloads passed without compute or hardware faults. |
-| `1` | `USAGE_ERROR` | Invalid CLI arguments, unknown commands/tests/backends, malformed durations, or conflicting flags. |
-| `2` | `INIT_ERROR` | No compatible GPU/backend found, requested device/backend unavailable, context creation failed, or runtime kernel load/compile failed. |
-| `3` | `COMPUTE_ERROR` | Numerical/bitwise verification mismatch, silent data corruption (SDC), unexpected `NaN`/`Inf`, or memory fault. |
-| `4` | `HARDWARE_ERROR` | Device-lost error, GPU hang/reset, uncorrectable ECC fault, Xid/GPU fault, or thermal fault. |
+- Bash: `completions/cross-gpu.bash` -> `$(PREFIX)/share/bash-completion/completions/cross-gpu`
+- Zsh: `completions/_cross-gpu` -> `$(PREFIX)/share/zsh/site-functions/_cross-gpu`
+- Fish: `completions/cross-gpu.fish` -> `$(PREFIX)/share/fish/vendor_completions.d/cross-gpu.fish`

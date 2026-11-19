@@ -2,13 +2,21 @@
 .SH NAME
 cross-gpu \- cross-platform GPU stress-testing CLI
 .SH SYNOPSIS
-.B cross-gpu list
-[\fB\-\-format\fR \fItext\fR|\fIjson\fR] [\fB\-\-json\fR] [\fB\-v\fR|\fB\-\-verbose\fR]
+.B cross-gpu
+[\fB\-v\fR|\fB\-\-verbose\fR]
+.B list
+[\fB\-\-format\fR \fItext\fR|\fIjson\fR]
+[\fB\-\-json\fR] [\fB\-v\fR|\fB\-\-verbose\fR]
 .br
-.B cross-gpu info
-[\fB\-\-format\fR \fItext\fR|\fIjson\fR] [\fB\-\-json\fR] [\fB\-v\fR|\fB\-\-verbose\fR]
+.B cross-gpu
+[\fB\-v\fR|\fB\-\-verbose\fR]
+.B info
+[\fB\-\-format\fR \fItext\fR|\fIjson\fR]
+[\fB\-\-json\fR] [\fB\-v\fR|\fB\-\-verbose\fR]
 .br
-.B cross-gpu run
+.B cross-gpu
+[\fB\-v\fR|\fB\-\-verbose\fR]
+.B run
 [\fB\-\-device\fR \fIall\fR|\fIN\fR]
 [\fB\-\-test\fR \fITEST\fR|\fIall\fR]
 [\fB\-\-duration\fR \fITIME\fR]
@@ -23,17 +31,23 @@ cross-gpu \- cross-platform GPU stress-testing CLI
 .B cross-gpu \-\-version
 .SH DESCRIPTION
 .B cross-gpu
-is a cross-platform GPU discovery, telemetry, and stress-testing command-line
-utility targeting Linux and macOS. It is implemented exclusively with the
-Python 3.10+ standard library and loads native GPU runtimes dynamically via
+is a cross-platform GPU discovery, hardware telemetry, and stress-testing
+command-line utility targeting Linux and macOS. It is implemented exclusively
+with the Python 3.10+ standard library (zero external Python dependencies) and
+loads native GPU runtimes dynamically via
 .BR ctypes (3)
 using versioned library SONAMEs and standard macOS frameworks.
 .PP
 Detected physical GPUs are deduplicated across backends using normalized PCIe
-BDF addresses, hardware UUIDs or macOS IOKit registry IDs, and fallback device
-fingerprints. Native backends (\fBcuda\fR, \fBhip\fR, \fBlevelzero\fR,
+BDF addresses, hardware UUIDs or macOS IOKit registry IDs, and ordinal
+hardware fingerprints. Native backends (\fBcuda\fR, \fBhip\fR, \fBlevelzero\fR,
 \fBmetal\fR) carry priority 100 and take precedence over \fBopencl\fR
 (priority 50).
+.PP
+Output stream separation is strict: \fBstdout\fR carries only formatted
+command output (text tables/telemetry, JSON/NDJSON, help, or version), while
+\fBstderr\fR carries all errors, discovery diagnostics, compiler logs, and
+\fB\-\-verbose\fR traces.
 .SH COMMANDS
 .TP
 .B list
@@ -44,7 +58,8 @@ Display detailed hardware properties, capability flags, and per-backend
 bindings for each detected GPU.
 .TP
 .B run
-Run GPU stress workloads with optional warmup and 1 Hz hardware telemetry.
+Execute GPU stress workloads with optional warmup, golden verification, and
+1 Hz hardware telemetry.
 .SH OPTIONS
 .TP
 .BI \-\-device " all|N"
@@ -52,15 +67,9 @@ Target all detected GPUs (\fBall\fR, default) or a single canonical device
 index \fIN\fR.
 .TP
 .BI \-\-test " TEST|all"
-Workload name, comma-separated workload list, or \fBall\fR (default). Valid
-workloads:
-\fBcompute-int64\fR, \fBcompute-int32\fR, \fBcompute-int16\fR,
-\fBcompute-int8\fR, \fBcompute-int4\fR, \fBcompute-fp64\fR,
-\fBcompute-fp32\fR, \fBcompute-fp16\fR, \fBcompute-fp8\fR, \fBcompute-fp4\fR,
-\fBcompute-bf16\fR, \fBcompute-tensor-fp32\fR, \fBcompute-tensor-fp16\fR,
-\fBcompute-tensor-bf16\fR, \fBcompute-tensor-int8\fR, \fBmemory-pattern\fR,
-\fBmemory-sweep\fR, \fBbandwidth-d2d\fR, \fBbandwidth-h2d\fR,
-\fBbandwidth-d2h\fR.
+Workload name, comma-separated workload list, or \fBall\fR (default). Typos
+in workload names, backend names, or subcommands produce \fBdifflib\fR
+suggestions on \fBstderr\fR and exit with status 1.
 .TP
 .BI \-\-duration " TIME"
 Timed execution duration per workload using suffix \fBms\fR, \fBs\fR, \fBm\fR,
@@ -80,9 +89,8 @@ backend plugin name (\fBcuda\fR, \fBhip\fR, \fBlevelzero\fR, \fBmetal\fR,
 .BI \-\-format " text|json"
 Output format (\fBtext\fR default, or \fBjson\fR). In \fBrun\fR mode,
 \fBjson\fR emits streaming newline-delimited JSON (NDJSON). Unusable or
-unavailable telemetry sensors are omitted from both \fBtext\fR lines (never
-printing placeholders) and NDJSON \fBmetrics\fR objects, and ticks with zero
-usable sensors are suppressed.
+unavailable telemetry sensors are omitted from both \fBtext\fR lines and
+NDJSON \fBmetrics\fR objects, and ticks with zero usable sensors are suppressed.
 .TP
 .B \-\-json
 Convenience shortcut for \fB\-\-format json\fR. Cannot be combined with
@@ -100,6 +108,24 @@ Show command help (including usage examples) and exit 0.
 .TP
 .B \-\-version
 Show version information and exit 0.
+.SH WORKLOADS
+All 20 canonical workloads use fixed SI units (10^9 scaling):
+.TP
+.B Scalar Integer (GOP/s, GOP)
+\fBcompute-int64\fR, \fBcompute-int32\fR, \fBcompute-int16\fR,
+\fBcompute-int8\fR, \fBcompute-int4\fR.
+.TP
+.B Scalar Floating-Point & ML (GFLOP/s, GFLOP)
+\fBcompute-fp64\fR, \fBcompute-fp32\fR, \fBcompute-fp16\fR,
+\fBcompute-fp8\fR, \fBcompute-fp4\fR, \fBcompute-bf16\fR.
+.TP
+.B Hardware Matrix / Tensor (GFLOP/s, GOP/s)
+\fBcompute-tensor-fp32\fR, \fBcompute-tensor-fp16\fR,
+\fBcompute-tensor-bf16\fR, \fBcompute-tensor-int8\fR.
+.TP
+.B Memory & Bandwidth (GB/s, GB)
+\fBmemory-pattern\fR, \fBmemory-sweep\fR, \fBbandwidth-d2d\fR,
+\fBbandwidth-h2d\fR, \fBbandwidth-d2h\fR.
 .SH EXIT STATUS
 Exit codes are ordered strictly by ascending severity and aggregated across
 devices and workloads using \fBmax(codes)\fR:
@@ -108,8 +134,8 @@ devices and workloads using \fBmax(codes)\fR:
 \fBSUCCESS\fR \- All executed workloads passed without compute or hardware faults.
 .TP
 .B 1
-\fBUSAGE_ERROR\fR \- Invalid CLI arguments, unknown flags/tests, invalid
-durations, or conflicting options.
+\fBUSAGE_ERROR\fR \- Invalid CLI arguments, unknown commands/flags/tests/backends,
+invalid durations, or conflicting options.
 .TP
 .B 2
 \fBINIT_ERROR\fR \- No compatible GPU/backend found, requested device or
@@ -118,11 +144,11 @@ runtime compilation failed.
 .TP
 .B 3
 \fBCOMPUTE_ERROR\fR \- Numerical/bitwise verification mismatch, silent data
-corruption (SDC), unexpected NaN/Inf, or memory pattern mismatch.
+corruption (SDC), unexpected NaN/Inf, or memory pattern/sweep mismatch.
 .TP
 .B 4
 \fBHARDWARE_ERROR\fR \- Device-lost error, GPU hang/reset, uncorrectable ECC
-fault, Xid/GPU fault, or fatal thermal shutdown error.
+fault, Xid/GPU fault, or fatal thermal fault.
 .SH ENVIRONMENT
 .TP
 .B XDG_CACHE_HOME
@@ -158,6 +184,9 @@ Default runtime binary cache on macOS (unless \fBXDG_CACHE_HOME\fR is set).
 If the cache directory is read-only or unavailable, caching degrades cleanly
 to in-memory only.
 .TP
+.I /sys/class/drm/card*/device/
+Linux DRM and \fIhwmon\fR sysfs hierarchy queried for AMD and Intel telemetry.
+.TP
 .I /usr/share/bash-completion/completions/cross-gpu
 Installed Bash completion script (under \fI$PREFIX/share/...\fR).
 .TP
@@ -166,9 +195,6 @@ Installed Zsh completion script (under \fI$PREFIX/share/...\fR).
 .TP
 .I /usr/share/fish/vendor_completions.d/cross-gpu.fish
 Installed Fish completion script (under \fI$PREFIX/share/...\fR).
-.TP
-.I /sys/class/drm/card*/device/
-Linux DRM and \fIhwmon\fR sysfs hierarchy queried for AMD and Intel telemetry.
 .SH EXAMPLES
 List detected GPUs in JSON format:
 .PP
@@ -182,8 +208,21 @@ Run FP32 compute and memory pattern checks on GPU 0 with 5-second warmup:
 .PP
 .RS
 .EX
-cross-gpu run --device 0 --test compute-fp32,memory-pattern --duration 30s --warmup
+cross-gpu run --device 0 --test compute-fp32,memory-pattern --warmup 5s --duration 30s
 .EE
 .RE
+.PP
+Run a 500 ms smoke check with verbose diagnostics routed to stderr:
+.PP
+.RS
+.EX
+CROSS_GPU_NO_CACHE=1 cross-gpu run --test compute-fp32 --warmup 250ms --duration 500ms --json -v
+.EE
+.RE
+.SH SEE ALSO
+.BR nvidia-smi (1),
+.BR rocm-smi (1),
+.BR clinfo (1),
+.BR ioreg (8)
 .SH LICENSE
 MIT License.
