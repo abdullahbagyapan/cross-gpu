@@ -32,7 +32,7 @@ jobs:
       - name: Run offline unit test suite
         run: python3 -m unittest discover -s tests -v
 
-      - name: Verify embedded kernel integrity
+      - name: Verify packaged kernel sources
         run: python3 -m cross_gpu.embed_binary verify
 
       - name: Test clean package install in isolated venv
@@ -43,6 +43,8 @@ jobs:
           python3 -m venv "${VENV_DIR}"
           "${VENV_DIR}/bin/pip" install --no-deps .
           cd "${RUNNER_TEMP}"
+          "${VENV_DIR}/bin/python" -m cross_gpu.embed_binary verify
+          test "$("${VENV_DIR}/bin/python" -m cross_gpu.embed_binary list | wc -l | tr -d ' ')" -eq 90
           "${VENV_DIR}/bin/cross-gpu" --help >/dev/null
           "${VENV_DIR}/bin/cross-gpu" --version
           "${VENV_DIR}/bin/cross-gpu" list --json | "${VENV_DIR}/bin/python" -c "import json, sys; data = json.load(sys.stdin); assert isinstance(data.get('devices'), list)"
