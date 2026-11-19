@@ -105,6 +105,13 @@ from cross_gpu.workloads.compute_scalar import (
     ComputeInt32Executor,
     ComputeInt64Executor,
 )
+from cross_gpu.workloads.compute_tensor import (
+    TENSOR_EXECUTOR_CLASSES,
+    ComputeTensorBF16Executor,
+    ComputeTensorFP16Executor,
+    ComputeTensorFP32Executor,
+    ComputeTensorInt8Executor,
+)
 from cross_gpu.workloads.registry import (
     SI_UNIT_SCALE,
     WORKLOAD_REGISTRY,
@@ -160,6 +167,7 @@ __all__ = [
     "PATTERN_MODE_WALKING_ZEROS",
     "SCALAR_EXECUTOR_CLASSES",
     "SI_UNIT_SCALE",
+    "TENSOR_EXECUTOR_CLASSES",
     "BaseComputeKernelExecutor",
     "ComputeBF16Executor",
     "ComputeFP4Executor",
@@ -172,6 +180,10 @@ __all__ = [
     "ComputeInt16Executor",
     "ComputeInt32Executor",
     "ComputeInt64Executor",
+    "ComputeTensorBF16Executor",
+    "ComputeTensorFP16Executor",
+    "ComputeTensorFP32Executor",
+    "ComputeTensorInt8Executor",
     "TENSOR_FP_ABS_TOL",
     "TENSOR_FP_REL_TOL",
     "UNIFIED_HEADROOM_MIN_BYTES",
