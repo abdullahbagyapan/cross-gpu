@@ -35,6 +35,73 @@ jobs:
       - name: Verify packaged kernel sources
         run: python3 -m cross_gpu.embed_binary verify
 
+      - name: Validate shell completion syntax
+        shell: bash
+        run: bash -n completions/cross-gpu.bash
+
+      - name: Build and verify self-contained sdist tarball
+        shell: bash
+        run: |
+          set -euo pipefail
+          BUILD_VENV="${RUNNER_TEMP}/cross-gpu-sdist-venv"
+          SDIST_OUT="${RUNNER_TEMP}/cross-gpu-sdist-out"
+          SDIST_EXTRACT="${RUNNER_TEMP}/cross-gpu-sdist-extract"
+          python3 -m venv "${BUILD_VENV}"
+          "${BUILD_VENV}/bin/pip" install --quiet setuptools build
+          "${BUILD_VENV}/bin/python" -m build --sdist --no-isolation --outdir "${SDIST_OUT}" .
+          "${BUILD_VENV}/bin/python" - "${SDIST_OUT}" "${SDIST_EXTRACT}" <<'PY'
+          import pathlib
+          import sys
+          import tarfile
+
+          sdist_dir = pathlib.Path(sys.argv[1])
+          extract_dir = pathlib.Path(sys.argv[2])
+          tarballs = sorted(sdist_dir.glob("*.tar.gz"))
+          assert len(tarballs) == 1, f"Expected 1 sdist tarball, got {tarballs}"
+          tb = tarballs[0]
+
+          with tarfile.open(tb, "r:gz") as tf:
+              names = tf.getnames()
+              rel_paths = {n.split("/", 1)[1] for n in names if "/" in n}
+              required = (
+                  "LICENSE",
+                  "README.md",
+                  "CHANGELOG.md",
+                  "Makefile",
+                  "pyproject.toml",
+                  "completions/cross-gpu.bash",
+                  "completions/_cross-gpu",
+                  "completions/cross-gpu.fish",
+                  "docs/cross-gpu.1",
+                  "tests/test_cli.py",
+                  "tests/test_embed_binary.py",
+              )
+              for req in required:
+                  assert req in rel_paths, f"Missing required sdist entry: {req}"
+
+              kernel_files = [
+                  p for p in rel_paths
+                  if p.startswith("cross_gpu/kernels/")
+                  and p.endswith((".cu", ".hip", ".cl", ".metal"))
+              ]
+              assert len(kernel_files) == 90, f"Expected 90 kernel files in sdist, got {len(kernel_files)}"
+
+              forbidden = [
+                  p for p in rel_paths
+                  if "__pycache__" in p or p.endswith((".pyc", ".pyo")) or p.startswith((".git/", "dist/", "build/"))
+              ]
+              assert not forbidden, f"Forbidden artifacts in sdist: {forbidden}"
+
+              extract_dir.mkdir(parents=True, exist_ok=True)
+              tf.extractall(extract_dir)
+          PY
+          EXTRACTED_ROOT="$(find "${SDIST_EXTRACT}" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
+          (
+            cd "${EXTRACTED_ROOT}"
+            python3 -m unittest discover -s tests -v
+            python3 -m cross_gpu.embed_binary verify
+          )
+
       - name: Test clean package install in isolated venv
         shell: bash
         run: |
