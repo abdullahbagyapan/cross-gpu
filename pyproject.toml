@@ -32,13 +32,12 @@ classifiers = [
 cross-gpu = "cross_gpu.cli:main"
 
 [tool.setuptools]
+packages = ["cross_gpu", "cross_gpu.backends", "cross_gpu.telemetry", "cross_gpu.workloads"]
+package-dir = {"cross_gpu" = "src"}
 include-package-data = true
 
 [tool.setuptools.dynamic]
 version = { attr = "cross_gpu.__version__" }
-
-[tool.setuptools.packages.find]
-include = ["cross_gpu*"]
 
 [tool.setuptools.package-data]
 cross_gpu = [

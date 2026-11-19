@@ -14,9 +14,9 @@ test:
 	$(PYTHON) -m unittest discover -s tests -v
 
 check:
-	$(PYTHON) -m compileall -q cross_gpu tests
+	$(PYTHON) -m compileall -q src tests
 	$(PYTHON) -m unittest discover -s tests -v
-	$(PYTHON) -m cross_gpu.embed_binary verify
+	$(PYTHON) -m src.embed_binary verify
 
 install:
 	$(PYTHON) -m pip install --no-build-isolation --no-deps \
@@ -32,5 +32,5 @@ install:
 
 clean:
 	rm -rf build dist *.egg-info
-	find cross_gpu tests -name '__pycache__' -type d -prune -exec rm -rf {} +
-	find cross_gpu tests -name '*.py[co]' -delete
+	find src tests -name '__pycache__' -type d -prune -exec rm -rf {} +
+	find src tests -name '*.py[co]' -delete

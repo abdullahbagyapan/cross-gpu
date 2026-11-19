@@ -24,9 +24,9 @@ jobs:
 
       - name: Run pre-release verification checks
         run: |
-          python3 -m compileall -q cross_gpu tests
+          python3 -m compileall -q src tests
           python3 -m unittest discover -s tests -v
-          python3 -m cross_gpu.embed_binary verify
+          python3 -m src.embed_binary verify
 
       - name: Build sdist and wheel
         run: |

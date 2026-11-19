@@ -6,7 +6,8 @@ include pyproject.toml
 include cross-gpu
 recursive-include completions *
 recursive-include docs *
-recursive-include cross_gpu/kernels *.cu *.hip *.cl *.metal README.md
+recursive-include src *.py
+recursive-include src/kernels *.cu *.hip *.cl *.metal README.md
 recursive-include tests *.py
 prune build
 prune dist

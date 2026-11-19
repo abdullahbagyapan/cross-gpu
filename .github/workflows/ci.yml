@@ -27,13 +27,13 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Bytecode syntax validation
-        run: python3 -m compileall -q cross_gpu tests
+        run: python3 -m compileall -q src tests
 
       - name: Run offline unit test suite
         run: python3 -m unittest discover -s tests -v
 
       - name: Verify packaged kernel sources
-        run: python3 -m cross_gpu.embed_binary verify
+        run: python3 -m src.embed_binary verify
 
       - name: Validate shell completion syntax
         shell: bash
@@ -81,7 +81,7 @@ jobs:
 
               kernel_files = [
                   p for p in rel_paths
-                  if p.startswith("cross_gpu/kernels/")
+                  if p.startswith("src/kernels/")
                   and p.endswith((".cu", ".hip", ".cl", ".metal"))
               ]
               assert len(kernel_files) == 90, f"Expected 90 kernel files in sdist, got {len(kernel_files)}"
@@ -99,7 +99,7 @@ jobs:
           (
             cd "${EXTRACTED_ROOT}"
             python3 -m unittest discover -s tests -v
-            python3 -m cross_gpu.embed_binary verify
+            python3 -m src.embed_binary verify
           )
 
       - name: Test clean package install in isolated venv
@@ -118,3 +118,4 @@ jobs:
           "${VENV_DIR}/bin/cross-gpu" info --json | "${VENV_DIR}/bin/python" -c "import json, sys; data = json.load(sys.stdin); assert isinstance(data.get('devices'), list)"
           "${VENV_DIR}/bin/python" -m cross_gpu --version
           "${VENV_DIR}/bin/python" -c "import importlib.metadata as m; assert not m.requires('cross-gpu')"
+          "${VENV_DIR}/bin/python" -c "import sysconfig, pathlib; sp = pathlib.Path(sysconfig.get_path('purelib')); assert (sp / 'cross_gpu').is_dir(); assert not (sp / 'src').exists()"
