@@ -192,7 +192,7 @@ class TestEmbedBinary(unittest.TestCase):
         )
         self.assertEqual(res_list.returncode, 0, res_list.stderr)
 
-    def test_encode_decode_helpers_and_empty_repo_kernels_dir(self) -> None:
+    def test_encode_decode_helpers_and_empty_dir_scan(self) -> None:
         b64, sha = encode_payload(b"hello")
         raw = decode_payload(
             {
@@ -205,7 +205,8 @@ class TestEmbedBinary(unittest.TestCase):
             }
         )
         self.assertEqual(raw, b"hello")
-        self.assertEqual(scan_kernels_directory(), {})
+        with tempfile.TemporaryDirectory() as empty_dir:
+            self.assertEqual(scan_kernels_directory(Path(empty_dir)), {})
 
     def test_os_standard_cache_directories_and_sandbox_fallback(self) -> None:
         fake_home = Path("/fake/home")

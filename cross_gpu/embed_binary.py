@@ -72,11 +72,25 @@ class CompiledKernelBinary:
     cache_key: str = ""
 
 
-def default_entry_point(workload: str) -> str:
-    """Return canonical C/kernel entry point name for a workload slug."""
+_MULTI_ENTRY_POINTS: dict[str, tuple[str, ...]] = {
+    "memory_pattern": ("kernel_memory_pattern_write", "kernel_memory_pattern_verify"),
+    "memory_sweep": ("kernel_memory_sweep_write", "kernel_memory_sweep_verify"),
+}
+
+
+def default_entry_points(workload: str) -> tuple[str, ...]:
+    """Return all canonical kernel entry-point symbol names for a workload."""
+    normalized = workload.replace("-", "_")
+    if normalized in _MULTI_ENTRY_POINTS:
+        return _MULTI_ENTRY_POINTS[normalized]
     if workload in WORKLOAD_SPECS_BY_NAME:
-        return WORKLOAD_SPECS_BY_NAME[workload].default_entry_point
-    return f"kernel_{workload.replace('-', '_')}"
+        return (WORKLOAD_SPECS_BY_NAME[workload].default_entry_point,)
+    return (f"kernel_{normalized}",)
+
+
+def default_entry_point(workload: str) -> str:
+    """Return primary C/kernel entry point name for a workload slug."""
+    return default_entry_points(workload)[0]
 
 
 def kernel_key(backend: str, workload: str) -> str:
@@ -290,12 +304,14 @@ def scan_kernels_directory(kernels_dir: Path = KERNELS_DIR) -> dict[str, dict[st
             raw_bytes = file_path.read_bytes()
             b64, sha256_hex = encode_payload(raw_bytes)
             key = kernel_key(backend, workload)
+            entry_points = list(default_entry_points(workload))
             packed[key] = {
                 "backend": backend,
                 "workload": workload,
                 "filename": file_path.name,
                 "format": fmt,
-                "entry_point": default_entry_point(workload),
+                "entry_point": entry_points[0],
+                "entry_points": entry_points,
                 "sha256": sha256_hex,
                 "size_bytes": len(raw_bytes),
                 "zlib_b64": b64,
