@@ -112,6 +112,14 @@ from cross_gpu.workloads.compute_tensor import (
     ComputeTensorFP32Executor,
     ComputeTensorInt8Executor,
 )
+from cross_gpu.workloads.memory import (
+    MEMORY_EXECUTOR_CLASSES,
+    BandwidthD2DExecutor,
+    BandwidthD2HExecutor,
+    BandwidthH2DExecutor,
+    MemoryPatternExecutor,
+    MemorySweepExecutor,
+)
 from cross_gpu.workloads.registry import (
     SI_UNIT_SCALE,
     WORKLOAD_REGISTRY,
@@ -151,6 +159,7 @@ __all__ = [
     "FULL_VERIFY_BUFFER_LIMIT_BYTES",
     "GIB",
     "KIB",
+    "MEMORY_EXECUTOR_CLASSES",
     "MEMORY_PATTERN_VRAM_RATIO",
     "MEMORY_SWEEP_VRAM_RATIO",
     "MIB",
@@ -168,6 +177,9 @@ __all__ = [
     "SCALAR_EXECUTOR_CLASSES",
     "SI_UNIT_SCALE",
     "TENSOR_EXECUTOR_CLASSES",
+    "BandwidthD2DExecutor",
+    "BandwidthD2HExecutor",
+    "BandwidthH2DExecutor",
     "BaseComputeKernelExecutor",
     "ComputeBF16Executor",
     "ComputeFP4Executor",
@@ -184,6 +196,8 @@ __all__ = [
     "ComputeTensorFP16Executor",
     "ComputeTensorFP32Executor",
     "ComputeTensorInt8Executor",
+    "MemoryPatternExecutor",
+    "MemorySweepExecutor",
     "TENSOR_FP_ABS_TOL",
     "TENSOR_FP_REL_TOL",
     "UNIFIED_HEADROOM_MIN_BYTES",
