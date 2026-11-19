@@ -617,6 +617,7 @@ class LevelZeroBackend(BackendPlugin):
                             "core_clock_mhz": int(props.coreClockRate),
                             "eu_simd_width": int(props.physicalEUSimdWidth),
                             "threads_per_eu": int(props.numThreadsPerEU),
+                            "max_buffer_length": int(props.maxMemAllocSize),
                         },
                     )
                 )

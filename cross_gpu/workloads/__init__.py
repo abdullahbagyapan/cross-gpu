@@ -135,7 +135,17 @@ from cross_gpu.workloads.registry import (
     register_workload_executor,
 )
 
+ALL_EXECUTOR_CLASSES: dict[str, type[WorkloadExecutor]] = {
+    **SCALAR_EXECUTOR_CLASSES,
+    **TENSOR_EXECUTOR_CLASSES,
+    **MEMORY_EXECUTOR_CLASSES,
+}
+
+for _workload_name, _executor_cls in ALL_EXECUTOR_CLASSES.items():
+    register_workload_executor(_workload_name, _executor_cls)
+
 __all__ = [
+    "ALL_EXECUTOR_CLASSES",
     "BANDWIDTH_DISCRETE_CAP_BYTES",
     "BANDWIDTH_MAX_HOST_RAM_RATIO",
     "BANDWIDTH_MAX_VRAM_RATIO",

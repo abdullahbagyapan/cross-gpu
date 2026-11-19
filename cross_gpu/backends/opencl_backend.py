@@ -53,6 +53,7 @@ CL_DEVICE_VENDOR_ID = 0x1001
 CL_DEVICE_MAX_COMPUTE_UNITS = 0x1002
 CL_DEVICE_MAX_WORK_GROUP_SIZE = 0x1004
 CL_DEVICE_MAX_CLOCK_FREQUENCY = 0x100C
+CL_DEVICE_MAX_MEM_ALLOC_SIZE = 0x1010
 CL_DEVICE_GLOBAL_MEM_SIZE = 0x101F
 CL_DEVICE_NAME = 0x102B
 CL_DEVICE_VENDOR = 0x102C
@@ -61,6 +62,7 @@ CL_DEVICE_VERSION = 0x102F
 CL_DEVICE_EXTENSIONS = 0x1030
 CL_DEVICE_DOUBLE_FP_CONFIG = 0x1032
 CL_DEVICE_HALF_FP_CONFIG = 0x1033
+CL_DEVICE_HOST_UNIFIED_MEMORY = 0x1035
 CL_DEVICE_UUID_KHR = 0x106A
 
 CL_DEVICE_PCI_BUS_ID_NV = 0x4008
@@ -504,10 +506,13 @@ class OpenCLBackend(BackendPlugin):
                 ext_tokens = set(ext_str.split())
 
                 total_mem = self._get_device_u64(api, dev, CL_DEVICE_GLOBAL_MEM_SIZE) or 0
+                max_alloc = self._get_device_u64(api, dev, CL_DEVICE_MAX_MEM_ALLOC_SIZE) or 0
                 cu_count = self._get_device_u32(api, dev, CL_DEVICE_MAX_COMPUTE_UNITS) or 0
+                max_wg = self._get_device_u64(api, dev, CL_DEVICE_MAX_WORK_GROUP_SIZE) or 0
                 max_clock = self._get_device_u32(api, dev, CL_DEVICE_MAX_CLOCK_FREQUENCY)
                 fp64_cfg = self._get_device_u64(api, dev, CL_DEVICE_DOUBLE_FP_CONFIG) or 0
                 fp16_cfg = self._get_device_u64(api, dev, CL_DEVICE_HALF_FP_CONFIG) or 0
+                unified_mem = bool(self._get_device_u32(api, dev, CL_DEVICE_HOST_UNIFIED_MEMORY) or 0)
 
                 caps = DeviceCapabilities(
                     fp64=("cl_khr_fp64" in ext_tokens or fp64_cfg != 0),
@@ -548,6 +553,9 @@ class OpenCLBackend(BackendPlugin):
                         extra={
                             "platform": platform_name,
                             "max_clock_mhz": max_clock,
+                            "max_buffer_length": max_alloc,
+                            "max_threads_per_block": max_wg,
+                            "has_unified_memory": unified_mem,
                         },
                     )
                 )

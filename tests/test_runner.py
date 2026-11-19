@@ -131,12 +131,14 @@ class TestRunner(unittest.TestCase):
         backend = _StubBackend()
         gpu = _make_gpu(0)
         events: list[dict[str, object]] = []
+        reg = _fresh_registry()
+        register_workload_executor("compute-fp32", None, registry=reg)
         runner = StressRunner(
             devices=[gpu],
             plugins={"stub": backend},
             tests=["compute-fp32"],
             duration_s=0.05,
-            registry=_fresh_registry(),
+            registry=reg,
             event_callback=events.append,
         )
         report = runner.run()

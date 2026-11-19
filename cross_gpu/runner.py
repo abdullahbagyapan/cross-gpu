@@ -62,6 +62,15 @@ class _DeviceTelemetryState:
             return self.phase, self.workload
 
 
+DEFAULT_VERIFY_INTERVAL_S = 5.0
+
+
+def _is_unsupported_compile_error(exc: KernelCompilationError) -> bool:
+    """Return True when a compiler diagnostic explicitly signals #error UNSUPPORTED."""
+    haystack = f"{exc}\n{exc.compiler_log}".upper()
+    return "UNSUPPORTED" in haystack
+
+
 class StressRunner:
     """Coordinates device/backend selection, multi-GPU execution, signals, and telemetry."""
 
@@ -78,6 +87,7 @@ class StressRunner:
         explicit_test_selection: bool = True,
         event_callback: EventCallback | None = None,
         telemetry_interval_s: float = 1.0,
+        verify_interval_s: float = DEFAULT_VERIFY_INTERVAL_S,
         registry: dict[str, WorkloadEntry] | None = None,
         compile_fn: CompileFn = compile_kernel_runtime,
         telemetry_reader: Callable[[GPUDevice | None], TelemetrySample] = read_telemetry,
@@ -92,6 +102,7 @@ class StressRunner:
         self.explicit_test_selection = explicit_test_selection
         self.event_callback = event_callback
         self.telemetry_interval_s = float(telemetry_interval_s)
+        self.verify_interval_s = float(verify_interval_s)
         self.registry = WORKLOAD_REGISTRY if registry is None else registry
         self.compile_fn = compile_fn
         self.telemetry_reader = telemetry_reader
@@ -142,6 +153,7 @@ class StressRunner:
         plugin: BackendPlugin,
         out_results: list[WorkloadResult],
         out_lock: threading.Lock,
+        target_count: int = 1,
     ) -> None:
         telemetry_state = _DeviceTelemetryState(self.tests[0] if self.tests else "")
 
@@ -201,7 +213,7 @@ class StressRunner:
                     backend=binding.backend,
                     workload=test_name,
                     category=spec.category,
-                    status="not_implemented",
+                    status="init_error",
                     duration_s=0.0,
                     rate=None,
                     rate_unit=spec.rate_unit,
@@ -229,6 +241,7 @@ class StressRunner:
                     backend_ctx=backend_ctx,
                     entry=entry,
                     telemetry_state=telemetry_state,
+                    target_count=target_count,
                 )
                 with out_lock:
                     out_results.append(res)
@@ -241,6 +254,12 @@ class StressRunner:
                 except Exception:
                     pass
 
+    def _unsupported_exit_code(self, target_count: int) -> ExitCode:
+        # On multi-GPU runs, explicit unsupported status is promoted in run() only if all devices lack support.
+        if self.explicit_test_selection and target_count <= 1:
+            return ExitCode.INIT_ERROR
+        return ExitCode.SUCCESS
+
     def _execute_single_workload(
         self,
         *,
@@ -250,6 +269,7 @@ class StressRunner:
         backend_ctx: BackendContext,
         entry: WorkloadEntry,
         telemetry_state: _DeviceTelemetryState,
+        target_count: int = 1,
     ) -> WorkloadResult:
         spec: WorkloadSpec = entry.spec
         executor_cls = entry.executor_cls
@@ -274,7 +294,6 @@ class StressRunner:
 
         executor: WorkloadExecutor = executor_cls(spec)
         if not executor.check_support(binding.device_info):
-            code = ExitCode.INIT_ERROR if self.explicit_test_selection else ExitCode.SUCCESS
             return WorkloadResult(
                 device=device.index,
                 device_name=device.name,
@@ -292,7 +311,7 @@ class StressRunner:
                     f"Device {device.name!r} lacks required capability "
                     f"{spec.required_capability!r}"
                 ),
-                exit_code=code,
+                exit_code=self._unsupported_exit_code(target_count),
             )
 
         exec_ctx = WorkloadExecutionContext(
@@ -303,7 +322,6 @@ class StressRunner:
             spec=spec,
         )
 
-        prepared = False
         try:
             compiled = None
             requires_kernel = getattr(executor, "requires_kernel", spec.requires_kernel)
@@ -319,7 +337,6 @@ class StressRunner:
             exec_ctx.compiled_binary = compiled
 
             executor.prepare(exec_ctx, compiled)
-            prepared = True
 
             # Warmup phase: telemetry tagged "warmup", throughput excluded.
             if self.warmup_s > 0 and not self._stop_event.is_set():
@@ -330,24 +347,66 @@ class StressRunner:
                     plugin.synchronize(backend_ctx)
                     if time.perf_counter() - warmup_start >= self.warmup_s:
                         break
+                plugin.synchronize(backend_ctx)
+                executor.reset_run_state(exec_ctx)
 
-            # Timed run phase.
+            # Timed run phase with periodic verification checkpoints and signal responsiveness.
             telemetry_state.set("run", spec.name)
             total_ops = 0.0
             step_errors = 0
+            timed_steps = 0
+            checkpoint_overhead_s = 0.0
+            checkpoint_failure = None
+
+            plugin.synchronize(backend_ctx)
             run_start = time.perf_counter()
-            while True:
-                if self._stop_event.is_set():
-                    break
+            last_checkpoint = run_start
+
+            while not self._stop_event.is_set():
                 step = executor.run_step(exec_ctx)
                 plugin.synchronize(backend_ctx)
+                timed_steps += 1
                 total_ops += float(step.operations)
                 step_errors += int(step.errors)
-                if time.perf_counter() - run_start >= self.duration_s:
+                if step.errors > 0:
                     break
-            elapsed_s = max(time.perf_counter() - run_start, 1e-9)
 
-            ver = executor.verify(exec_ctx)
+                now = time.perf_counter()
+                if (now - run_start - checkpoint_overhead_s) >= self.duration_s:
+                    break
+
+                if self.verify_interval_s > 0 and (now - last_checkpoint) >= self.verify_interval_s:
+                    cp_start = time.perf_counter()
+                    cp_ver = executor.verify(exec_ctx)
+                    cp_end = time.perf_counter()
+                    checkpoint_overhead_s += cp_end - cp_start
+                    last_checkpoint = cp_end
+                    if not cp_ver.passed or cp_ver.error_count > 0:
+                        checkpoint_failure = cp_ver
+                        break
+
+            raw_elapsed = time.perf_counter() - run_start - checkpoint_overhead_s
+            elapsed_s = max(raw_elapsed, 1e-9) if timed_steps > 0 else 0.0
+
+            if timed_steps == 0 and self._stop_event.is_set():
+                return WorkloadResult(
+                    device=device.index,
+                    device_name=device.name,
+                    backend=binding.backend,
+                    workload=spec.name,
+                    category=spec.category,
+                    status="pass",
+                    duration_s=0.0,
+                    rate=0.0,
+                    rate_unit=spec.rate_unit,
+                    total=0.0,
+                    total_unit=spec.total_unit,
+                    errors=0,
+                    message="Interrupted before timed execution",
+                    exit_code=ExitCode.SUCCESS,
+                )
+
+            ver = checkpoint_failure if checkpoint_failure is not None else executor.verify(exec_ctx)
             total_errors = step_errors + int(ver.error_count)
             total_scaled = total_ops / spec.unit_scale
             rate = total_scaled / elapsed_s
@@ -436,9 +495,43 @@ class StressRunner:
                 total_unit=spec.total_unit,
                 errors=0,
                 message=str(exc),
+                exit_code=self._unsupported_exit_code(target_count),
+            )
+        except KernelCompilationError as exc:
+            if _is_unsupported_compile_error(exc):
+                return WorkloadResult(
+                    device=device.index,
+                    device_name=device.name,
+                    backend=binding.backend,
+                    workload=spec.name,
+                    category=spec.category,
+                    status="unsupported",
+                    duration_s=0.0,
+                    rate=None,
+                    rate_unit=spec.rate_unit,
+                    total=None,
+                    total_unit=spec.total_unit,
+                    errors=0,
+                    message=exc.compiler_log or str(exc),
+                    exit_code=self._unsupported_exit_code(target_count),
+                )
+            return WorkloadResult(
+                device=device.index,
+                device_name=device.name,
+                backend=binding.backend,
+                workload=spec.name,
+                category=spec.category,
+                status="init_error",
+                duration_s=0.0,
+                rate=None,
+                rate_unit=spec.rate_unit,
+                total=None,
+                total_unit=spec.total_unit,
+                errors=0,
+                message=f"{exc}: {exc.compiler_log}".strip(": "),
                 exit_code=ExitCode.INIT_ERROR,
             )
-        except (KernelNotFoundError, KernelCompilationError, BackendInitError) as exc:
+        except KernelNotFoundError as exc:
             return WorkloadResult(
                 device=device.index,
                 device_name=device.name,
@@ -455,12 +548,28 @@ class StressRunner:
                 message=str(exc),
                 exit_code=ExitCode.INIT_ERROR,
             )
+        except BackendInitError as exc:
+            return WorkloadResult(
+                device=device.index,
+                device_name=device.name,
+                backend=binding.backend,
+                workload=spec.name,
+                category=spec.category,
+                status="init_error",
+                duration_s=0.0,
+                rate=None,
+                rate_unit=spec.rate_unit,
+                total=None,
+                total_unit=spec.total_unit,
+                errors=0,
+                message=str(exc),
+                exit_code=ExitCode.INIT_ERROR,
+            )
         finally:
-            if prepared:
-                try:
-                    executor.cleanup(exec_ctx)
-                except Exception:
-                    pass
+            try:
+                executor.cleanup(exec_ctx)
+            except Exception:
+                pass
 
     def run(self) -> RunReport:
         """Execute selected workloads across target GPUs with signal-safe cleanup."""
@@ -512,16 +621,19 @@ class StressRunner:
 
         results: list[WorkloadResult] = []
         results_lock = threading.Lock()
+        target_count = len(targets)
         try:
-            if len(targets) == 1:
+            if target_count == 1:
                 dev, binding, plugin = targets[0]
-                self._run_device_workloads(dev, binding, plugin, results, results_lock)
+                self._run_device_workloads(
+                    dev, binding, plugin, results, results_lock, target_count=1
+                )
             else:
                 threads: list[threading.Thread] = []
                 for dev, binding, plugin in targets:
                     t = threading.Thread(
                         target=self._run_device_workloads,
-                        args=(dev, binding, plugin, results, results_lock),
+                        args=(dev, binding, plugin, results, results_lock, target_count),
                         name=f"cross-gpu-dev-{dev.index}",
                     )
                     threads.append(t)
@@ -536,6 +648,17 @@ class StressRunner:
                     signal.signal(signal.SIGTERM, prev_sigterm)
 
         results.sort(key=lambda r: (r.device, self.tests.index(r.workload)))
+
+        # Promote explicit --test <name> to INIT_ERROR if unsupported on ALL selected devices.
+        if results and self.explicit_test_selection:
+            by_workload: dict[str, list[WorkloadResult]] = {}
+            for r in results:
+                by_workload.setdefault(r.workload, []).append(r)
+            for wl_results in by_workload.values():
+                if all(r.status == "unsupported" for r in wl_results):
+                    for r in wl_results:
+                        r.exit_code = ExitCode.INIT_ERROR
+
         codes = [r.exit_code for r in results]
         if results and not self.explicit_test_selection and all(
             r.status == "unsupported" for r in results

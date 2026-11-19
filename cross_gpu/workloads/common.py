@@ -233,7 +233,7 @@ def is_unified_memory_device(device_info: BackendDeviceInfo) -> bool:
         return True
     if extra.get("integrated") is True or extra.get("is_low_power") is True:
         return True
-    if device_info.backend == "metal" and device_info.vendor.lower() == "apple":
+    if device_info.vendor.lower() == "apple":
         return True
     return False
 

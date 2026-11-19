@@ -410,6 +410,7 @@ class HipBackend(BackendPlugin):
                         "warp_size": int(prop.warpSize),
                         "max_threads_per_block": int(prop.maxThreadsPerBlock),
                         "gcn_arch_name": gcn_arch,
+                        "has_unified_memory": bool(prop.integrated),
                     },
                 )
             )
