@@ -16,6 +16,7 @@ from cross_gpu.backends.base import (
     KernelModule,
     bind_c_symbol,
     bind_optional_c_symbol,
+    check_linux_render_node_hint,
     coerce_kernel_arg,
     format_pci_bdf,
     format_uuid_bytes,
@@ -483,18 +484,29 @@ class LevelZeroBackend(BackendPlugin):
     def is_available(self) -> bool:
         if self._api is not None and self._initialized:
             return True
+        self._probe_log.clear()
         try:
-            lib = load_shared_library(LEVELZERO_LIB_CANDIDATES)
+            lib = load_shared_library(
+                LEVELZERO_LIB_CANDIDATES,
+                diag_fn=self._record_probe,
+                label=self.name,
+            )
             api = _LevelZeroApi(lib)
             rc = api.zeInit(ZE_INIT_FLAG_GPU_ONLY)
             if rc != ZE_RESULT_SUCCESS:
                 rc = api.zeInit(0)
             if rc != ZE_RESULT_SUCCESS:
-                self._load_error = f"zeInit failed with code 0x{rc:08x}"
+                perm_hint = check_linux_render_node_hint()
+                self._load_error = perm_hint or f"zeInit failed with code 0x{rc & 0xFFFFFFFF:08x}"
+                self._record_probe(f"probe levelzero: {self._load_error}")
                 return False
             self._api = api
             self._initialized = True
+            self._load_error = None
             return True
+        except OSError:
+            self._load_error = f"{LEVELZERO_LIB_CANDIDATES[0]} not found"
+            return False
         except Exception as exc:
             self._load_error = str(exc)
             return False
@@ -531,6 +543,9 @@ class LevelZeroBackend(BackendPlugin):
         drv_count = ctypes.c_uint32(0)
         self._check(api.zeDriverGet(ctypes.byref(drv_count), None), "zeDriverGet(count)")
         if drv_count.value == 0:
+            self._load_error = (
+                check_linux_render_node_hint() or "no Level Zero GPU drivers detected"
+            )
             return []
 
         drivers = (ctypes.c_void_p * drv_count.value)()

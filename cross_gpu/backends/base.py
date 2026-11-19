@@ -5,13 +5,18 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 import ctypes
 from dataclasses import dataclass, field
-from typing import Any, Sequence
+import os
+from pathlib import Path
+import sys
+from typing import Any, Callable, Sequence
 
 from cross_gpu.exit_codes import BackendHardwareError, BackendInitError
 from cross_gpu.models import BackendDeviceInfo
 
 NATIVE_BACKEND_PRIORITY = 100
 OPENCL_BACKEND_PRIORITY = 50
+
+DiagCallback = Callable[[str], None]
 
 
 @dataclass
@@ -56,15 +61,59 @@ class KernelModule:
     extra: dict[str, Any] = field(default_factory=dict)
 
 
-def load_shared_library(candidates: Sequence[str]) -> ctypes.CDLL:
+def load_shared_library(
+    candidates: Sequence[str],
+    *,
+    diag_fn: DiagCallback | None = None,
+    label: str = "",
+) -> ctypes.CDLL:
     """Load the first available shared library from candidate names/paths."""
     last_err: OSError | None = None
+    prefix = f"probe {label}: " if label else "probe: "
     for candidate in candidates:
         try:
-            return ctypes.CDLL(candidate)
+            lib = ctypes.CDLL(candidate)
+            if diag_fn is not None:
+                diag_fn(f"{prefix}loaded {candidate}")
+            return lib
         except OSError as exc:
             last_err = exc
-    raise OSError(f"Unable to load any of {list(candidates)}: {last_err}")
+            if diag_fn is not None:
+                diag_fn(f"{prefix}{candidate} failed ({exc})")
+    primary = candidates[0] if candidates else "<none>"
+    raise OSError(f"{primary} not found (tried {', '.join(candidates)}: {last_err})")
+
+
+def check_linux_render_node_hint(
+    *,
+    platform_name: str | None = None,
+    dri_dir: Path | None = None,
+    kfd_path: Path | None = None,
+    include_kfd: bool = False,
+) -> str | None:
+    """Detect Linux /dev/dri/renderD* (and optional /dev/kfd) permission denials."""
+    active_platform = sys.platform if platform_name is None else platform_name
+    if not active_platform.startswith("linux"):
+        return None
+
+    if include_kfd:
+        kfd = Path("/dev/kfd") if kfd_path is None else kfd_path
+        if kfd.exists() and not os.access(kfd, os.R_OK | os.W_OK):
+            return f"{kfd} permission denied — check 'render'/'video' group membership"
+
+    root = Path("/dev/dri") if dri_dir is None else dri_dir
+    if not root.is_dir():
+        return None
+    try:
+        render_nodes = sorted(root.glob("renderD*"))
+    except OSError:
+        return None
+    if not render_nodes:
+        return None
+    accessible = [node for node in render_nodes if os.access(node, os.R_OK | os.W_OK)]
+    if not accessible:
+        return f"{render_nodes[0]} permission denied — check 'render'/'video' group membership"
+    return None
 
 
 def bind_c_symbol(
@@ -163,11 +212,20 @@ class BackendPlugin(ABC):
 
     def __init__(self) -> None:
         self._load_error: str | None = None
+        self._probe_log: list[str] = []
 
     @property
     def load_error(self) -> str | None:
         """Diagnostic message explaining why this backend is unavailable, if any."""
         return self._load_error
+
+    @property
+    def probe_log(self) -> tuple[str, ...]:
+        """Recorded SONAME/framework probe attempts for --verbose diagnostics."""
+        return tuple(self._probe_log)
+
+    def _record_probe(self, message: str) -> None:
+        self._probe_log.append(message)
 
     @abstractmethod
     def is_available(self) -> bool:
@@ -265,10 +323,12 @@ __all__ = [
     "BackendInitError",
     "BackendPlugin",
     "DeviceBuffer",
+    "DiagCallback",
     "HostBuffer",
     "KernelModule",
     "bind_c_symbol",
     "bind_optional_c_symbol",
+    "check_linux_render_node_hint",
     "coerce_kernel_arg",
     "format_pci_bdf",
     "format_uuid_bytes",

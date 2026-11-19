@@ -5,8 +5,10 @@ from __future__ import annotations
 import importlib
 from typing import Iterable
 
-from cross_gpu.backends.base import BackendPlugin
+from cross_gpu.backends.base import BackendPlugin, DiagCallback
 from cross_gpu.models import BackendDeviceInfo
+
+KNOWN_BACKENDS: tuple[str, ...] = ("cuda", "hip", "levelzero", "metal", "opencl")
 
 BUILTIN_PLUGIN_SPECS: tuple[tuple[str, str], ...] = (
     ("cross_gpu.backends.cuda_backend", "CudaBackend"),
@@ -57,22 +59,64 @@ def get_backend_plugin(
     return None
 
 
+def enumerate_all_backend_devices_with_diagnostics(
+    plugins: Iterable[BackendPlugin] | None = None,
+    *,
+    diag_fn: DiagCallback | None = None,
+) -> tuple[list[BackendDeviceInfo], dict[str, BackendPlugin], dict[str, str]]:
+    """Probe all plugins, collect per-backend diagnostics, and enumerate available devices."""
+    all_plugins = discover_backends(only_available=False) if plugins is None else list(plugins)
+    devices: list[BackendDeviceInfo] = []
+    plugin_map: dict[str, BackendPlugin] = {}
+    diagnostics: dict[str, str] = {}
+
+    for plugin in all_plugins:
+        try:
+            available = plugin.is_available()
+        except Exception as exc:
+            available = False
+            reason = str(exc)
+            diagnostics[plugin.name] = reason
+            if diag_fn is not None:
+                diag_fn(f"backend {plugin.name}: probe error ({reason})")
+            continue
+
+        if diag_fn is not None:
+            for entry in plugin.probe_log:
+                diag_fn(entry)
+
+        if not available:
+            reason = plugin.load_error or "unavailable"
+            diagnostics[plugin.name] = reason
+            if diag_fn is not None:
+                diag_fn(f"backend {plugin.name}: unavailable ({reason})")
+            continue
+
+        try:
+            found = plugin.enumerate_devices()
+        except Exception as exc:
+            reason = str(exc)
+            diagnostics[plugin.name] = reason
+            if diag_fn is not None:
+                diag_fn(f"backend {plugin.name}: enumeration failed ({reason})")
+            continue
+
+        plugin_map[plugin.name] = plugin
+        devices.extend(found)
+        if not found:
+            reason = plugin.load_error or f"no {plugin.name} devices detected"
+            diagnostics[plugin.name] = reason
+            if diag_fn is not None:
+                diag_fn(f"backend {plugin.name}: loaded, 0 devices ({reason})")
+        elif diag_fn is not None:
+            diag_fn(f"backend {plugin.name}: loaded, {len(found)} device(s)")
+
+    return devices, plugin_map, diagnostics
+
+
 def enumerate_all_backend_devices(
     plugins: Iterable[BackendPlugin] | None = None,
 ) -> tuple[list[BackendDeviceInfo], dict[str, BackendPlugin]]:
     """Enumerate devices from all available plugins without failing on a broken plugin."""
-    active_plugins = discover_backends(only_available=True) if plugins is None else list(plugins)
-    devices: list[BackendDeviceInfo] = []
-    plugin_map: dict[str, BackendPlugin] = {}
-
-    for plugin in active_plugins:
-        try:
-            if not plugin.is_available():
-                continue
-            found = plugin.enumerate_devices()
-        except Exception:
-            continue
-        plugin_map[plugin.name] = plugin
-        devices.extend(found)
-
+    devices, plugin_map, _ = enumerate_all_backend_devices_with_diagnostics(plugins=plugins)
     return devices, plugin_map

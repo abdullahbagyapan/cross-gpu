@@ -3,14 +3,20 @@
 from __future__ import annotations
 
 import argparse
+import inspect
 import json
 import math
 import re
 import sys
-from typing import Any, Callable, Sequence, TextIO
+import threading
+from typing import Any, Callable, Mapping, Sequence, TextIO
 
 from cross_gpu import __version__
-from cross_gpu.backends.registry import enumerate_all_backend_devices
+from cross_gpu.backends.base import DiagCallback
+from cross_gpu.backends.registry import (
+    enumerate_all_backend_devices,
+    enumerate_all_backend_devices_with_diagnostics,
+)
 from cross_gpu.dedup import deduplicate_devices
 from cross_gpu.exit_codes import ExitCode, UsageError
 from cross_gpu.models import GPUDevice, WorkloadResult
@@ -136,6 +142,13 @@ def build_parser(
         action="version",
         version=f"cross-gpu {__version__}",
     )
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Write detailed probe, deduplication, and compiler diagnostics to stderr",
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     for cmd_name, help_text in (
@@ -153,6 +166,13 @@ def build_parser(
             "--json",
             action="store_true",
             help="Convenience shortcut for --format json",
+        )
+        sub.add_argument(
+            "-v",
+            "--verbose",
+            action="store_true",
+            default=argparse.SUPPRESS,
+            help="Write detailed probe, deduplication, and compiler diagnostics to stderr",
         )
 
     run_p = subparsers.add_parser("run", help="Run GPU stress workloads")
@@ -193,6 +213,13 @@ def build_parser(
         "--json",
         action="store_true",
         help="Convenience shortcut for --format json",
+    )
+    run_p.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Write detailed probe, deduplication, and compiler diagnostics to stderr",
     )
     return parser
 
@@ -299,24 +326,37 @@ def format_run_summary_text(results: Sequence[WorkloadResult], exit_code: ExitCo
     if not results:
         return f"No workloads executed (exit_code={int(exit_code)} {exit_code.name}).\n"
 
-    headers = ("DEV", "BACKEND", "WORKLOAD", "STATUS", "RATE", "TOTAL", "ERR", "TIME", "EXIT")
+    include_reason = any(
+        res.status == "unsupported" or bool(res.reason) or res.status in ("fail", "init_error", "hardware_error", "not_implemented")
+        for res in results
+    )
+    headers: tuple[str, ...] = (
+        ("DEV", "BACKEND", "WORKLOAD", "STATUS", "RATE", "TOTAL", "ERR", "TIME", "EXIT", "REASON")
+        if include_reason
+        else ("DEV", "BACKEND", "WORKLOAD", "STATUS", "RATE", "TOTAL", "ERR", "TIME", "EXIT")
+    )
     rows: list[tuple[str, ...]] = []
     for res in results:
         rate_str = f"{res.rate:.2f} {res.rate_unit}" if res.rate is not None else "N/A"
         total_str = f"{res.total:.2f} {res.total_unit}" if res.total is not None else "N/A"
-        rows.append(
-            (
-                str(res.device),
-                res.backend,
-                res.workload,
-                res.status,
-                rate_str,
-                total_str,
-                str(res.errors),
-                f"{res.duration_s:.2f}s",
-                str(int(res.exit_code)),
-            )
+        base_row = (
+            str(res.device),
+            res.backend,
+            res.workload,
+            res.status,
+            rate_str,
+            total_str,
+            str(res.errors),
+            f"{res.duration_s:.2f}s",
+            str(int(res.exit_code)),
         )
+        if include_reason:
+            detail = res.reason or (res.message if res.status != "pass" else "")
+            if res.status == "unsupported" and not detail:
+                detail = f"unsupported on {res.backend}"
+            rows.append((*base_row, detail or "-"))
+        else:
+            rows.append(base_row)
 
     widths = [
         max(len(headers[col]), *(len(row[col]) for row in rows))
@@ -334,9 +374,72 @@ def format_run_summary_text(results: Sequence[WorkloadResult], exit_code: ExitCo
     return "\n".join(lines) + "\n"
 
 
+def _make_verbose_logger(err_stream: TextIO, enabled: bool) -> DiagCallback | None:
+    if not enabled:
+        return None
+    lock = threading.Lock()
+
+    def _log(message: str) -> None:
+        with lock:
+            err_stream.write(f"[verbose] {message}\n")
+            err_stream.flush()
+
+    return _log
+
+
+def _write_backend_diagnostics(
+    err_stream: TextIO,
+    backend_diagnostics: Mapping[str, str],
+    *,
+    header: str | None = None,
+    only_backend: str | None = None,
+) -> None:
+    if not backend_diagnostics:
+        return
+    if only_backend is not None and only_backend != "auto":
+        reason = backend_diagnostics.get(only_backend)
+        if reason:
+            err_stream.write(f"cross-gpu: {only_backend}: {reason}\n")
+            err_stream.flush()
+        return
+    if header:
+        err_stream.write(f"cross-gpu: {header}\n")
+    for backend_name in sorted(backend_diagnostics):
+        err_stream.write(f"  {backend_name}: {backend_diagnostics[backend_name]}\n")
+    err_stream.flush()
+
+
 def _default_discover_fn() -> tuple[list[GPUDevice], dict[str, Any]]:
     raw_devices, plugins = enumerate_all_backend_devices()
     return deduplicate_devices(raw_devices), plugins
+
+
+def _discover_with_diagnostics(
+    discover_fn: Callable[..., Any] | None,
+    *,
+    diag_fn: DiagCallback | None = None,
+) -> tuple[list[GPUDevice], dict[str, Any], dict[str, str]]:
+    if discover_fn is None or discover_fn is _default_discover_fn:
+        raw_devices, plugins, diagnostics = enumerate_all_backend_devices_with_diagnostics(
+            diag_fn=diag_fn
+        )
+        return deduplicate_devices(raw_devices, diag_fn=diag_fn), plugins, diagnostics
+
+    result = discover_fn()
+    if isinstance(result, tuple) and len(result) == 3:
+        return result[0], result[1], dict(result[2])
+    return result[0], result[1], {}
+
+
+def _runner_accepts_kwarg(runner_factory: Callable[..., Any], kwarg: str) -> bool:
+    try:
+        sig = inspect.signature(runner_factory)
+    except (TypeError, ValueError):
+        return False
+    for param in sig.parameters.values():
+        if param.kind == inspect.Parameter.VAR_KEYWORD or param.name == kwarg:
+            return True
+    return False
 
 
 def main(
@@ -344,7 +447,7 @@ def main(
     *,
     stdout: TextIO | None = None,
     stderr: TextIO | None = None,
-    discover_fn: Callable[[], tuple[list[GPUDevice], dict[str, Any]]] = _default_discover_fn,
+    discover_fn: Callable[..., Any] | None = _default_discover_fn,
     runner_factory: Callable[..., Any] = StressRunner,
 ) -> int:
     """Main CLI entry point returning deterministic integer exit code."""
@@ -353,11 +456,19 @@ def main(
 
     parser = build_parser(out_stream=out, err_stream=err)
     args = parser.parse_args(list(argv) if argv is not None else None)
+    verbose = bool(getattr(args, "verbose", False))
+    diag_fn = _make_verbose_logger(err, verbose)
 
     try:
         fmt = resolve_output_format(args.format, bool(args.json))
         if args.command == "list":
-            devices, _ = discover_fn()
+            devices, _, backend_diagnostics = _discover_with_diagnostics(
+                discover_fn, diag_fn=diag_fn
+            )
+            if not devices:
+                _write_backend_diagnostics(
+                    err, backend_diagnostics, header="no compatible GPUs detected:"
+                )
             if fmt == "json":
                 payload = {"devices": [dev.to_list_dict() for dev in devices]}
                 out.write(json.dumps(payload, indent=2) + "\n")
@@ -367,7 +478,13 @@ def main(
             return int(ExitCode.SUCCESS)
 
         if args.command == "info":
-            devices, _ = discover_fn()
+            devices, _, backend_diagnostics = _discover_with_diagnostics(
+                discover_fn, diag_fn=diag_fn
+            )
+            if not devices:
+                _write_backend_diagnostics(
+                    err, backend_diagnostics, header="no compatible GPUs detected:"
+                )
             if fmt == "json":
                 payload = {"devices": [dev.to_info_dict() for dev in devices]}
                 out.write(json.dumps(payload, indent=2) + "\n")
@@ -385,14 +502,33 @@ def main(
             if not backend_pref:
                 raise UsageError("--backend cannot be empty")
 
-            devices, plugins = discover_fn()
+            devices, plugins, backend_diagnostics = _discover_with_diagnostics(
+                discover_fn, diag_fn=diag_fn
+            )
 
             def emit_event(event: dict[str, Any]) -> None:
+                etype = event.get("type")
+                if etype == "run_summary" and event.get("error"):
+                    err.write(f"cross-gpu: error: {event['error']}\n")
+                    if not devices:
+                        _write_backend_diagnostics(
+                            err,
+                            backend_diagnostics,
+                            header="backend probe summary:" if backend_pref == "auto" else None,
+                            only_backend=backend_pref if backend_pref != "auto" else None,
+                        )
+                    elif backend_pref != "auto":
+                        _write_backend_diagnostics(
+                            err,
+                            backend_diagnostics,
+                            only_backend=backend_pref,
+                        )
+                    err.flush()
+
                 if fmt == "json":
                     out.write(json.dumps(event) + "\n")
                     out.flush()
                     return
-                etype = event.get("type")
                 if etype == "telemetry":
                     out.write(format_telemetry_line(event) + "\n")
                     out.flush()
@@ -406,21 +542,24 @@ def main(
                         f"tests={len(tests)} duration={duration_s:.2f}s warmup={warmup_s:.2f}s\n"
                     )
                     out.flush()
-                elif etype == "run_summary" and event.get("error"):
-                    err.write(f"Error: {event['error']}\n")
-                    err.flush()
 
-            runner = runner_factory(
-                devices=devices,
-                plugins=plugins,
-                tests=tests,
-                duration_s=duration_s,
-                warmup_s=warmup_s,
-                device_index=device_index,
-                backend_preference=backend_pref,
-                explicit_test_selection=explicit_test_selection,
-                event_callback=emit_event,
-            )
+            runner_kwargs: dict[str, Any] = {
+                "devices": devices,
+                "plugins": plugins,
+                "tests": tests,
+                "duration_s": duration_s,
+                "warmup_s": warmup_s,
+                "device_index": device_index,
+                "backend_preference": backend_pref,
+                "explicit_test_selection": explicit_test_selection,
+                "event_callback": emit_event,
+            }
+            if _runner_accepts_kwarg(runner_factory, "diag_fn"):
+                runner_kwargs["diag_fn"] = diag_fn
+            if _runner_accepts_kwarg(runner_factory, "backend_diagnostics"):
+                runner_kwargs["backend_diagnostics"] = backend_diagnostics
+
+            runner = runner_factory(**runner_kwargs)
             report = runner.run()
             if fmt == "text":
                 out.write(format_run_summary_text(report.results, report.exit_code))

@@ -17,6 +17,7 @@ from cross_gpu.backends.base import (
     KernelModule,
     bind_c_symbol,
     bind_optional_c_symbol,
+    check_linux_render_node_hint,
     coerce_kernel_arg,
     format_pci_bdf,
     format_uuid_bytes,
@@ -26,8 +27,8 @@ from cross_gpu.backends.base import (
 from cross_gpu.models import BackendDeviceInfo, DeviceCapabilities
 
 HIP_LIB_CANDIDATES: tuple[str, ...] = (
-    "libamdhip64.so",
     "libamdhip64.so.6",
+    "libamdhip64.so",
     "libamdhip64.so.5",
 )
 AMD_PCI_VENDOR_ID = 0x1002
@@ -313,10 +314,19 @@ class HipBackend(BackendPlugin):
     def is_available(self) -> bool:
         if self._api is not None:
             return True
+        self._probe_log.clear()
         try:
-            lib = load_shared_library(HIP_LIB_CANDIDATES)
+            lib = load_shared_library(
+                HIP_LIB_CANDIDATES,
+                diag_fn=self._record_probe,
+                label=self.name,
+            )
             self._api = _HipApi(lib)
+            self._load_error = None
             return True
+        except OSError:
+            self._load_error = f"{HIP_LIB_CANDIDATES[0]} not found"
+            return False
         except Exception as exc:
             self._load_error = str(exc)
             return False
@@ -345,7 +355,14 @@ class HipBackend(BackendPlugin):
         api = self._require_api()
         count = ctypes.c_int(0)
         rc = api.hipGetDeviceCount(ctypes.byref(count))
-        if rc != HIP_SUCCESS:
+        if rc != HIP_SUCCESS or count.value == 0:
+            perm_hint = check_linux_render_node_hint(include_kfd=True)
+            if perm_hint:
+                self._load_error = perm_hint
+            elif rc != HIP_SUCCESS:
+                self._load_error = f"hipGetDeviceCount failed: {self._error_message(api, rc)} (code={rc})"
+            else:
+                self._load_error = "no HIP devices detected"
             return []
 
         drv_ver = ""

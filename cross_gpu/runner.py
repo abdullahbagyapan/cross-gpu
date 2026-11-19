@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import inspect
+import re
 import signal
 import threading
 import time
 from typing import Any, Callable, Sequence
 
-from cross_gpu.backends.base import BackendContext, BackendPlugin
+from cross_gpu.backends.base import BackendContext, BackendPlugin, DiagCallback
 from cross_gpu.dedup import resolve_device_backend
 from cross_gpu.embed_binary import compile_kernel_runtime
 from cross_gpu.exit_codes import (
@@ -21,7 +23,13 @@ from cross_gpu.exit_codes import (
     UnsupportedKernelError,
     aggregate_exit_codes,
 )
-from cross_gpu.models import BackendBinding, GPUDevice, TelemetrySample, WorkloadResult
+from cross_gpu.models import (
+    BackendBinding,
+    BackendDeviceInfo,
+    GPUDevice,
+    TelemetrySample,
+    WorkloadResult,
+)
 from cross_gpu.telemetry import TelemetrySampler, read_telemetry
 from cross_gpu.workloads import (
     WORKLOAD_REGISTRY,
@@ -29,6 +37,7 @@ from cross_gpu.workloads import (
     WorkloadExecutionContext,
     WorkloadExecutor,
     WorkloadSpec,
+    explain_unsupported_workload,
 )
 
 EventCallback = Callable[[dict[str, Any]], None]
@@ -65,10 +74,41 @@ class _DeviceTelemetryState:
 DEFAULT_VERIFY_INTERVAL_S = 5.0
 
 
+_UNSUPPORTED_REASON_RE = re.compile(r"UNSUPPORTED\s*:\s*([^\r\n\"']+)", re.IGNORECASE)
+
+
 def _is_unsupported_compile_error(exc: KernelCompilationError) -> bool:
     """Return True when a compiler diagnostic explicitly signals #error UNSUPPORTED."""
     haystack = f"{exc}\n{exc.compiler_log}".upper()
     return "UNSUPPORTED" in haystack
+
+
+def _extract_unsupported_reason(
+    exc: KernelCompilationError,
+    device_info: BackendDeviceInfo,
+    spec: WorkloadSpec,
+) -> str:
+    """Extract a clean human-readable skip reason from a compiler UNSUPPORTED diagnostic."""
+    for source in (exc.compiler_log, str(exc)):
+        if not source:
+            continue
+        match = _UNSUPPORTED_REASON_RE.search(source)
+        if match:
+            cleaned = match.group(1).strip(" .;:-\t\"'")
+            if cleaned:
+                return cleaned
+    return explain_unsupported_workload(device_info, spec)
+
+
+def _callable_accepts_kwarg(fn: Callable[..., Any], kwarg: str) -> bool:
+    try:
+        sig = inspect.signature(fn)
+    except (TypeError, ValueError):
+        return False
+    for param in sig.parameters.values():
+        if param.kind == inspect.Parameter.VAR_KEYWORD or param.name == kwarg:
+            return True
+    return False
 
 
 class StressRunner:
@@ -91,6 +131,8 @@ class StressRunner:
         registry: dict[str, WorkloadEntry] | None = None,
         compile_fn: CompileFn = compile_kernel_runtime,
         telemetry_reader: Callable[[GPUDevice | None], TelemetrySample] = read_telemetry,
+        diag_fn: DiagCallback | None = None,
+        backend_diagnostics: dict[str, str] | None = None,
     ) -> None:
         self.devices = list(devices)
         self.plugins = dict(plugins)
@@ -106,6 +148,8 @@ class StressRunner:
         self.registry = WORKLOAD_REGISTRY if registry is None else registry
         self.compile_fn = compile_fn
         self.telemetry_reader = telemetry_reader
+        self.diag_fn = diag_fn
+        self.backend_diagnostics = dict(backend_diagnostics or {})
 
         self._emit_lock = threading.Lock()
         self._stop_event = threading.Event()
@@ -122,6 +166,11 @@ class StressRunner:
 
     def _select_targets(self) -> list[tuple[GPUDevice, BackendBinding, BackendPlugin]]:
         if not self.devices:
+            if self.backend_preference != "auto" and self.backend_preference in self.backend_diagnostics:
+                reason = self.backend_diagnostics[self.backend_preference]
+                raise BackendInitError(
+                    f"Requested backend {self.backend_preference!r} is unavailable ({reason})"
+                )
             raise BackendInitError("No compatible GPU devices detected")
 
         if self.device_index is not None:
@@ -137,11 +186,19 @@ class StressRunner:
 
         targets: list[tuple[GPUDevice, BackendBinding, BackendPlugin]] = []
         for device in selected_devices:
-            binding = resolve_device_backend(device, self.backend_preference)
+            try:
+                binding = resolve_device_backend(device, self.backend_preference)
+            except BackendInitError as exc:
+                reason = self.backend_diagnostics.get(self.backend_preference)
+                if reason:
+                    raise BackendInitError(f"{exc} ({self.backend_preference}: {reason})") from exc
+                raise
             plugin = self.plugins.get(binding.backend)
             if plugin is None:
+                reason = self.backend_diagnostics.get(binding.backend)
+                suffix = f" ({reason})" if reason else ""
                 raise BackendInitError(
-                    f"Backend plugin {binding.backend!r} is not loaded"
+                    f"Backend plugin {binding.backend!r} is not loaded{suffix}"
                 )
             targets.append((device, binding, plugin))
         return targets
@@ -294,6 +351,11 @@ class StressRunner:
 
         executor: WorkloadExecutor = executor_cls(spec)
         if not executor.check_support(binding.device_info):
+            skip_reason = explain_unsupported_workload(binding.device_info, spec)
+            if self.diag_fn is not None:
+                self.diag_fn(
+                    f"skip [{binding.backend}:{spec.name}] dev={device.index}: {skip_reason}"
+                )
             return WorkloadResult(
                 device=device.index,
                 device_name=device.name,
@@ -307,10 +369,8 @@ class StressRunner:
                 total=None,
                 total_unit=spec.total_unit,
                 errors=0,
-                message=(
-                    f"Device {device.name!r} lacks required capability "
-                    f"{spec.required_capability!r}"
-                ),
+                message=skip_reason,
+                reason=skip_reason,
                 exit_code=self._unsupported_exit_code(target_count),
             )
 
@@ -326,13 +386,18 @@ class StressRunner:
             compiled = None
             requires_kernel = getattr(executor, "requires_kernel", spec.requires_kernel)
             if requires_kernel:
+                compile_kwargs: dict[str, Any] = {
+                    "driver_version": binding.device_info.driver_version,
+                    "entry_point": spec.default_entry_point,
+                }
+                if self.diag_fn is not None and _callable_accepts_kwarg(self.compile_fn, "diag_fn"):
+                    compile_kwargs["diag_fn"] = self.diag_fn
                 compiled = self.compile_fn(
                     binding.backend,
                     spec.name,
                     binding.device_info.architecture,
                     binding.device_info.capabilities,
-                    driver_version=binding.device_info.driver_version,
-                    entry_point=spec.default_entry_point,
+                    **compile_kwargs,
                 )
             exec_ctx.compiled_binary = compiled
 
@@ -481,6 +546,13 @@ class StressRunner:
                 exit_code=ExitCode.COMPUTE_ERROR,
             )
         except UnsupportedKernelError as exc:
+            skip_reason = str(exc).strip() or explain_unsupported_workload(
+                binding.device_info, spec
+            )
+            if self.diag_fn is not None:
+                self.diag_fn(
+                    f"skip [{binding.backend}:{spec.name}] dev={device.index}: {skip_reason}"
+                )
             return WorkloadResult(
                 device=device.index,
                 device_name=device.name,
@@ -494,11 +566,20 @@ class StressRunner:
                 total=None,
                 total_unit=spec.total_unit,
                 errors=0,
-                message=str(exc),
+                message=skip_reason,
+                reason=skip_reason,
                 exit_code=self._unsupported_exit_code(target_count),
             )
         except KernelCompilationError as exc:
+            if self.diag_fn is not None and exc.compiler_log:
+                for log_line in exc.compiler_log.splitlines():
+                    self.diag_fn(f"runtime compiler [{binding.backend}:{spec.name}]: {log_line}")
             if _is_unsupported_compile_error(exc):
+                skip_reason = _extract_unsupported_reason(exc, binding.device_info, spec)
+                if self.diag_fn is not None:
+                    self.diag_fn(
+                        f"skip [{binding.backend}:{spec.name}] dev={device.index}: {skip_reason}"
+                    )
                 return WorkloadResult(
                     device=device.index,
                     device_name=device.name,
@@ -512,7 +593,8 @@ class StressRunner:
                     total=None,
                     total_unit=spec.total_unit,
                     errors=0,
-                    message=exc.compiler_log or str(exc),
+                    message=skip_reason,
+                    reason=skip_reason,
                     exit_code=self._unsupported_exit_code(target_count),
                 )
             return WorkloadResult(

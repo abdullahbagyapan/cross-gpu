@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from typing import Iterable
+from typing import Callable, Iterable
 
 from cross_gpu.exit_codes import BackendInitError
 from cross_gpu.models import BackendBinding, BackendDeviceInfo, GPUDevice
@@ -116,6 +116,7 @@ class _PhysicalGroup:
         self.registry_id: int | None = first.registry_id
         self.fingerprint: tuple[str, str, int] = fallback_fingerprint(first)
         self.infos: list[BackendDeviceInfo] = [first]
+        self.match_reasons: list[str] = []
 
     def has_backend(self, backend_name: str) -> bool:
         return any(item.backend == backend_name for item in self.infos)
@@ -138,7 +139,7 @@ class _PhysicalGroup:
             return True
         return False
 
-    def add(self, info: BackendDeviceInfo) -> None:
+    def add(self, info: BackendDeviceInfo, match_reason: str = "") -> None:
         cand_bdf = normalize_pci_bdf(info.pci_bdf)
         cand_uuid = normalize_uuid(info.uuid)
         if not self.pci_bdf and cand_bdf:
@@ -147,13 +148,15 @@ class _PhysicalGroup:
             self.uuid = cand_uuid
         if self.registry_id is None and info.registry_id is not None:
             self.registry_id = info.registry_id
+        if match_reason:
+            self.match_reasons.append(match_reason)
         self.infos.append(info)
 
 
 def _find_matching_group(
     groups: list[_PhysicalGroup],
     info: BackendDeviceInfo,
-) -> _PhysicalGroup | None:
+) -> tuple[_PhysicalGroup, str] | None:
     cand_bdf = normalize_pci_bdf(info.pci_bdf)
     cand_uuid = normalize_uuid(info.uuid)
     cand_reg = info.registry_id
@@ -165,7 +168,7 @@ def _find_matching_group(
             if group.pci_bdf == cand_bdf and not group.strong_ids_conflict(
                 cand_bdf, cand_uuid, cand_reg
             ):
-                return group
+                return group, f"PCIe BDF {cand_bdf}"
 
     # 2. Hardware UUID / registryID match
     if cand_uuid is not None:
@@ -173,13 +176,13 @@ def _find_matching_group(
             if group.uuid == cand_uuid and not group.strong_ids_conflict(
                 cand_bdf, cand_uuid, cand_reg
             ):
-                return group
+                return group, f"UUID {cand_uuid}"
     if cand_reg is not None:
         for group in groups:
             if group.registry_id == cand_reg and not group.strong_ids_conflict(
                 cand_bdf, cand_uuid, cand_reg
             ):
-                return group
+                return group, f"registryID 0x{cand_reg:x}"
 
     # 3. Ordinal fallback fingerprint when no conflicting strong IDs exist
     for group in groups:
@@ -196,7 +199,7 @@ def _find_matching_group(
         if has_shared_strong_id_type:
             continue
         if group.fingerprint == cand_fp:
-            return group
+            return group, f"fallback fingerprint {cand_fp[0]}/{cand_fp[1]}/{cand_fp[2]}"
 
     return None
 
@@ -262,6 +265,8 @@ def _build_gpu_device(index: int, group: _PhysicalGroup) -> GPUDevice:
 
 def deduplicate_devices(
     backend_devices: Iterable[BackendDeviceInfo],
+    *,
+    diag_fn: Callable[[str], None] | None = None,
 ) -> list[GPUDevice]:
     """Deduplicate BackendDeviceInfo entries into canonical indexed GPUDevices."""
     ordered_inputs = sorted(
@@ -270,13 +275,37 @@ def deduplicate_devices(
     )
     groups: list[_PhysicalGroup] = []
     for info in ordered_inputs:
-        match = _find_matching_group(groups, info)
-        if match is not None:
-            match.add(info)
+        matched = _find_matching_group(groups, info)
+        if matched is not None:
+            group, reason = matched
+            primary = group.infos[0]
+            group.add(info, reason)
+            if diag_fn is not None:
+                diag_fn(
+                    f"dedup: merged {info.backend} ({info.priority}) into "
+                    f"{primary.backend} ({primary.priority}) for {primary.name!r} "
+                    f"via {reason}"
+                )
         else:
             groups.append(_PhysicalGroup(info))
 
-    return [_build_gpu_device(idx, grp) for idx, grp in enumerate(groups)]
+    devices = [_build_gpu_device(idx, grp) for idx, grp in enumerate(groups)]
+    if diag_fn is not None:
+        for dev, grp in zip(devices, groups):
+            winner = dev.bindings[0]
+            if len(dev.bindings) > 1:
+                others = ", ".join(f"{b.backend} ({b.priority})" for b in dev.bindings[1:])
+                reasons = "; ".join(grp.match_reasons)
+                diag_fn(
+                    f"dedup: GPU {dev.index} {dev.name!r} selected "
+                    f"{winner.backend} ({winner.priority}) over {others} [{reasons}]"
+                )
+            else:
+                diag_fn(
+                    f"dedup: GPU {dev.index} {dev.name!r} bound to "
+                    f"{winner.backend} ({winner.priority})"
+                )
+    return devices
 
 
 def resolve_device_backend(

@@ -278,15 +278,25 @@ class MetalBackend(BackendPlugin):
 
     def is_available(self) -> bool:
         if sys.platform != "darwin":
-            self._load_error = "Metal backend is only available on macOS"
+            self._probe_log.clear()
+            self._load_error = "macOS only"
+            self._record_probe("probe metal: skipped (macOS only)")
             return False
         if self._api is not None:
             return True
+        self._probe_log.clear()
         try:
-            libobjc = ctypes.CDLL(LIBOBJC_PATH)
-            libmetal = ctypes.CDLL(METAL_FRAMEWORK_PATH)
-            libsys = ctypes.CDLL(LIBSYSTEM_PATH)
-            self._api = _MetalApi(libobjc, libmetal, libsys)
+            loaded: list[ctypes.CDLL] = []
+            for path in (LIBOBJC_PATH, METAL_FRAMEWORK_PATH, LIBSYSTEM_PATH):
+                try:
+                    loaded.append(ctypes.CDLL(path))
+                    self._record_probe(f"probe metal: loaded {path}")
+                except OSError as exc:
+                    self._record_probe(f"probe metal: {path} failed ({exc})")
+                    self._load_error = f"{path} not found"
+                    return False
+            self._api = _MetalApi(loaded[0], loaded[1], loaded[2])
+            self._load_error = None
             return True
         except Exception as exc:
             self._load_error = str(exc)
@@ -339,6 +349,7 @@ class MetalBackend(BackendPlugin):
         try:
             dev_arr = api.MTLCopyAllDevices()
             if not dev_arr:
+                self._load_error = "no Metal GPUs detected"
                 return []
             try:
                 count = int(api.msg_u64(dev_arr, api.sel_count))

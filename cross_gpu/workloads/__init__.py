@@ -131,6 +131,7 @@ from cross_gpu.workloads.registry import (
     WorkloadSpec,
     capabilities_as_dict,
     device_supports_workload,
+    explain_unsupported_workload,
     list_workload_names,
     register_workload_executor,
 )
@@ -235,6 +236,7 @@ __all__ = [
     "decode_fp4_e2m1",
     "decode_fp8_e4m3",
     "device_supports_workload",
+    "explain_unsupported_workload",
     "fill_host_buffer_byte",
     "free_host_buffer",
     "golden_bf16_table",

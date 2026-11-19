@@ -227,11 +227,12 @@ class WorkloadResult:
     total_unit: str
     errors: int = 0
     message: str = ""
+    reason: str = ""
     exit_code: ExitCode = ExitCode.SUCCESS
 
     def to_dict(self) -> dict[str, Any]:
         """Return NDJSON-serializable workload result payload."""
-        return {
+        payload: dict[str, Any] = {
             "device": self.device,
             "device_name": self.device_name,
             "backend": self.backend,
@@ -247,3 +248,9 @@ class WorkloadResult:
             "message": self.message,
             "exit_code": int(self.exit_code),
         }
+        resolved_reason = self.reason or (self.message if self.status == "unsupported" else "")
+        if resolved_reason:
+            payload["reason"] = resolved_reason
+        elif self.status == "unsupported":
+            payload["reason"] = f"Workload {self.workload!r} is unsupported on {self.backend}"
+        return payload

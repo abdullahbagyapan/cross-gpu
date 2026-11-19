@@ -251,16 +251,27 @@ class CudaBackend(BackendPlugin):
     def is_available(self) -> bool:
         if self._api is not None and self._initialized:
             return True
+        self._probe_log.clear()
         try:
-            lib = load_shared_library(CUDA_LIB_CANDIDATES)
+            lib = load_shared_library(
+                CUDA_LIB_CANDIDATES,
+                diag_fn=self._record_probe,
+                label=self.name,
+            )
             api = _CudaApi(lib)
             rc = api.cuInit(0)
             if rc != CUDA_SUCCESS:
-                self._load_error = f"cuInit failed with code {rc}"
+                err_text = self._error_message(api, rc)
+                self._load_error = f"cuInit failed: {err_text} (code={rc})"
+                self._record_probe(f"probe cuda: {self._load_error}")
                 return False
             self._api = api
             self._initialized = True
+            self._load_error = None
             return True
+        except OSError:
+            self._load_error = f"{CUDA_LIB_CANDIDATES[0]} not found"
+            return False
         except Exception as exc:
             self._load_error = str(exc)
             return False
@@ -294,6 +305,9 @@ class CudaBackend(BackendPlugin):
         api = self._require_api()
         count = ctypes.c_int(0)
         self._check(api, api.cuDeviceGetCount(ctypes.byref(count)), "cuDeviceGetCount")
+        if count.value == 0:
+            self._load_error = "no CUDA devices detected"
+            return []
 
         drv_ver_int = ctypes.c_int(0)
         driver_version = ""

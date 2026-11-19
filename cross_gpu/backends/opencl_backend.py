@@ -17,6 +17,7 @@ from cross_gpu.backends.base import (
     KernelModule,
     bind_c_symbol,
     bind_optional_c_symbol,
+    check_linux_render_node_hint,
     coerce_kernel_arg,
     format_pci_bdf,
     format_uuid_bytes,
@@ -374,10 +375,19 @@ class OpenCLBackend(BackendPlugin):
     def is_available(self) -> bool:
         if self._api is not None:
             return True
+        self._probe_log.clear()
         try:
-            lib = load_shared_library(OPENCL_LIB_CANDIDATES)
+            lib = load_shared_library(
+                OPENCL_LIB_CANDIDATES,
+                diag_fn=self._record_probe,
+                label=self.name,
+            )
             self._api = _OpenCLApi(lib)
+            self._load_error = None
             return True
+        except OSError:
+            self._load_error = f"{OPENCL_LIB_CANDIDATES[0]} not found"
+            return False
         except Exception as exc:
             self._load_error = str(exc)
             return False
@@ -476,6 +486,9 @@ class OpenCLBackend(BackendPlugin):
         n_plat = ctypes.c_uint32(0)
         rc = api.clGetPlatformIDs(0, None, ctypes.byref(n_plat))
         if rc != CL_SUCCESS or n_plat.value == 0:
+            self._load_error = (
+                check_linux_render_node_hint() or "no OpenCL platforms detected"
+            )
             return []
 
         platforms = (ctypes.c_void_p * n_plat.value)()
@@ -560,6 +573,10 @@ class OpenCLBackend(BackendPlugin):
                     )
                 )
                 ordinal += 1
+        if not devices:
+            self._load_error = (
+                check_linux_render_node_hint() or "no OpenCL GPU devices detected"
+            )
         return devices
 
     def create_context(self, device: BackendDeviceInfo) -> BackendContext:

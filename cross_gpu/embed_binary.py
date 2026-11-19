@@ -17,7 +17,12 @@ import tempfile
 from typing import Any, Mapping, Sequence
 
 from cross_gpu import __version__
-from cross_gpu.backends.base import bind_c_symbol, bind_optional_c_symbol, load_shared_library
+from cross_gpu.backends.base import (
+    DiagCallback,
+    bind_c_symbol,
+    bind_optional_c_symbol,
+    load_shared_library,
+)
 from cross_gpu.exit_codes import (
     ExitCode,
     KernelCompilationError,
@@ -436,30 +441,31 @@ class RuntimeBinaryCache:
         """Clear in-memory compiled-kernel cache."""
         self._memory.clear()
 
-    def get(
+    def get_with_source(
         self,
         memory_key: MemoryCacheKey,
         disk_name: str | None = None,
         *,
         expected_meta: Mapping[str, Any] | None = None,
-    ) -> CompiledKernelBinary | None:
+    ) -> tuple[CompiledKernelBinary | None, str | None]:
+        """Look up compiled binary and return (entry, 'memory'|'disk'|None)."""
         if memory_key in self._memory:
-            return self._memory[memory_key]
+            return self._memory[memory_key], "memory"
         if disk_name is None or self.cache_dir is None:
-            return None
+            return None, None
         meta_path = self.cache_dir / f"{disk_name}.json"
         bin_path = self.cache_dir / f"{disk_name}.bin"
         try:
             if not (meta_path.is_file() and bin_path.is_file()):
-                return None
+                return None, None
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
             raw_bytes = bin_path.read_bytes()
             if len(raw_bytes) != int(meta.get("binary_size_bytes", -1)):
-                return None
+                return None, None
             if expected_meta is not None:
                 for field_name, expected_val in expected_meta.items():
                     if meta.get(field_name) != expected_val:
-                        return None
+                        return None, None
             entry = CompiledKernelBinary(
                 backend=str(meta["backend"]),
                 workload=str(meta["workload"]),
@@ -471,9 +477,23 @@ class RuntimeBinaryCache:
                 cache_key=disk_name,
             )
             self._memory[memory_key] = entry
-            return entry
+            return entry, "disk"
         except (OSError, KeyError, ValueError, TypeError):
-            return None
+            return None, None
+
+    def get(
+        self,
+        memory_key: MemoryCacheKey,
+        disk_name: str | None = None,
+        *,
+        expected_meta: Mapping[str, Any] | None = None,
+    ) -> CompiledKernelBinary | None:
+        entry, _source = self.get_with_source(
+            memory_key,
+            disk_name,
+            expected_meta=expected_meta,
+        )
+        return entry
 
     def put(
         self,
@@ -1035,6 +1055,7 @@ def compile_kernel_runtime(
     cache: RuntimeBinaryCache | None = None,
     specs: Mapping[tuple[str, str], KernelSpec] | None = None,
     resource_root: Any | None = None,
+    diag_fn: DiagCallback | None = None,
 ) -> CompiledKernelBinary:
     """Resolve raw kernel source via importlib.resources, compile at runtime, and cache."""
     if capabilities is not None and workload in WORKLOAD_SPECS_BY_NAME:
@@ -1053,6 +1074,11 @@ def compile_kernel_runtime(
             if isinstance(source_override, str)
             else bytes(source_override)
         )
+        if diag_fn is not None:
+            diag_fn(
+                f"kernel lookup [{backend}:{normalized_workload}]: "
+                f"source_override ({len(raw_bytes)} B)"
+            )
     else:
         loaded = load_kernel_source(
             backend,
@@ -1062,10 +1088,23 @@ def compile_kernel_runtime(
         )
         raw_bytes = loaded.source_bytes
         resolved_entry = entry_point or loaded.entry_point
+        if diag_fn is not None:
+            diag_fn(
+                f"kernel lookup [{backend}:{normalized_workload}]: "
+                f"importlib.resources cross_gpu/kernels/{loaded.backend}/{loaded.filename} "
+                f"({loaded.size_bytes} B)"
+            )
 
     macro_flags = _capability_macros(capabilities)
     combined_flags = canonicalize_compile_flags([*macro_flags, *(extra_flags or ())])
     active_cache = _DEFAULT_CACHE if cache is None else cache
+
+    if diag_fn is not None:
+        flags_desc = " ".join(combined_flags) if combined_flags else "<none>"
+        diag_fn(
+            f"compile flags [{backend}:{normalized_workload}] "
+            f"arch={target_arch or 'default'}: {flags_desc}"
+        )
 
     memory_key = compute_memory_cache_key(
         backend=backend,
@@ -1098,28 +1137,61 @@ def compile_kernel_runtime(
             "input_compile_flags": list(combined_flags),
         }
 
-    cached = active_cache.get(memory_key, disk_name, expected_meta=disk_meta)
+    cached, hit_source = active_cache.get_with_source(
+        memory_key, disk_name, expected_meta=disk_meta
+    )
     if cached is not None:
+        if diag_fn is not None:
+            if hit_source == "disk" and active_cache.cache_dir is not None and disk_name:
+                diag_fn(
+                    f"cache hit (disk) [{backend}:{normalized_workload}]: "
+                    f"{active_cache.cache_dir / f'{disk_name}.bin'}"
+                )
+            else:
+                diag_fn(f"cache hit (memory) [{backend}:{normalized_workload}]")
         return cached
 
-    if backend == "cuda":
-        result = _compile_cuda_nvrtc(
-            raw_bytes, normalized_workload, target_arch, resolved_entry, combined_flags
+    if diag_fn is not None:
+        cache_loc = str(active_cache.cache_dir) if (disk_name and active_cache.cache_dir) else "in-memory only"
+        diag_fn(f"cache miss [{backend}:{normalized_workload}] (cache={cache_loc})")
+
+    try:
+        if backend == "cuda":
+            result = _compile_cuda_nvrtc(
+                raw_bytes, normalized_workload, target_arch, resolved_entry, combined_flags
+            )
+        elif backend == "hip":
+            result = _compile_hip_hiprtc(
+                raw_bytes, normalized_workload, target_arch, resolved_entry, combined_flags
+            )
+        elif backend == "levelzero":
+            result = _compile_levelzero_spirv(
+                raw_bytes, normalized_workload, target_arch, resolved_entry, combined_flags
+            )
+        elif backend == "metal":
+            result = _compile_metal(raw_bytes, normalized_workload, resolved_entry, combined_flags)
+        elif backend == "opencl":
+            result = _compile_opencl(raw_bytes, normalized_workload, resolved_entry, combined_flags)
+        else:
+            raise KernelCompilationError(
+                f"Unsupported backend {backend!r} for runtime compilation"
+            )
+    except KernelCompilationError as exc:
+        if diag_fn is not None:
+            diag_fn(f"compile failed [{backend}:{normalized_workload}]: {exc}")
+            if exc.compiler_log:
+                for log_line in exc.compiler_log.splitlines():
+                    diag_fn(f"compiler [{backend}:{normalized_workload}]: {log_line}")
+        raise
+
+    if diag_fn is not None:
+        diag_fn(
+            f"compile ok [{backend}:{normalized_workload}]: "
+            f"format={result.format} size={len(result.binary_bytes)} B"
         )
-    elif backend == "hip":
-        result = _compile_hip_hiprtc(
-            raw_bytes, normalized_workload, target_arch, resolved_entry, combined_flags
-        )
-    elif backend == "levelzero":
-        result = _compile_levelzero_spirv(
-            raw_bytes, normalized_workload, target_arch, resolved_entry, combined_flags
-        )
-    elif backend == "metal":
-        result = _compile_metal(raw_bytes, normalized_workload, resolved_entry, combined_flags)
-    elif backend == "opencl":
-        result = _compile_opencl(raw_bytes, normalized_workload, resolved_entry, combined_flags)
-    else:
-        raise KernelCompilationError(f"Unsupported backend {backend!r} for runtime compilation")
+        if result.compiler_log:
+            for log_line in result.compiler_log.splitlines():
+                diag_fn(f"compiler [{backend}:{normalized_workload}]: {log_line}")
 
     result.cache_key = disk_name or f"memory:{backend}:{normalized_workload}"
     active_cache.put(memory_key, result, disk_name, meta_extra=disk_meta)
