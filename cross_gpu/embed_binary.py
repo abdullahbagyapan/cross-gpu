@@ -944,6 +944,19 @@ def _prepare_source_macros(source_bytes: bytes, flags: tuple[str, ...]) -> bytes
     return preamble + source_bytes
 
 
+def _is_missing_metal_toolchain_error(log: str) -> bool:
+    lower = log.lower()
+    return any(
+        phrase in lower
+        for phrase in (
+            "unable to find utility",
+            "no developer tools were found",
+            "active developer path",
+            "unable to lookup item",
+        )
+    )
+
+
 def _compile_metal(
     source_bytes: bytes,
     workload: str,
@@ -987,7 +1000,7 @@ def _compile_metal(
         )
         combined_err = f"{res1.stdout}\n{res1.stderr}".strip()
         if res1.returncode != 0:
-            if "unable to find utility" in combined_err.lower():
+            if _is_missing_metal_toolchain_error(combined_err):
                 return CompiledKernelBinary(
                     backend="metal",
                     workload=workload,

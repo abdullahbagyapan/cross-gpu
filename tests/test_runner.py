@@ -170,7 +170,7 @@ class TestRunner(unittest.TestCase):
             def run_step(self, ctx: WorkloadExecutionContext) -> StepMetrics:
                 import time as _time
 
-                _time.sleep(0.015)
+                _time.sleep(0.005)
                 step_counter["total"] += 1
                 # Each step yields exactly 1e9 FLOPs (= 1.0 GFLOP)
                 return StepMetrics(operations=1_000_000_000.0)
@@ -189,9 +189,9 @@ class TestRunner(unittest.TestCase):
             devices=[gpu],
             plugins={"stub": backend},
             tests=["compute-fp32"],
-            duration_s=0.08,
-            warmup_s=0.06,
-            telemetry_interval_s=0.02,
+            duration_s=0.10,
+            warmup_s=0.10,
+            telemetry_interval_s=0.01,
             registry=reg,
             event_callback=events.append,
             compile_fn=lambda *a, **kw: CompiledKernelBinary(

@@ -7,6 +7,7 @@ import ctypes
 import io
 import json
 import math
+import os
 from pathlib import Path
 import struct
 import subprocess
@@ -871,6 +872,10 @@ class TestPackagedKernels(unittest.TestCase):
         self.assertNotEqual(ref_pattern_word(0, 6, 42), ref_pattern_word(1, 6, 42))
         self.assertNotEqual(ref_splitmix64(0 ^ 42), ref_splitmix64(1 ^ 42))
 
+    @unittest.skipUnless(
+        os.environ.get("CROSS_GPU_HW_TESTS") == "1",
+        "Live host GPU tests skipped unless CROSS_GPU_HW_TESTS=1 is set",
+    )
     def test_host_metal_live_compile_and_golden_execution(self) -> None:
         from cross_gpu.backends.metal_backend import MetalBackend
 
@@ -1053,14 +1058,30 @@ class TestPackagedKernels(unittest.TestCase):
                 # Explicitly unsupported Metal kernels must fail with UNSUPPORTED
                 for bad_wl in ("compute_fp64", "compute_fp8", "compute_fp4", "compute_int4", "compute_tensor_int8"):
                     loaded = load_kernel_source("metal", bad_wl)
-                    compiled = compile_kernel_runtime("metal", bad_wl, dev.architecture, source_override=loaded.source_bytes, cache=cache)
-                    with self.assertRaises(KernelCompilationError) as err_ctx:
+                    try:
+                        compiled = compile_kernel_runtime(
+                            "metal",
+                            bad_wl,
+                            dev.architecture,
+                            source_override=loaded.source_bytes,
+                            cache=cache,
+                        )
                         backend.load_module(ctx, compiled)
-                    self.assertIn("UNSUPPORTED", err_ctx.exception.compiler_log)
+                    except KernelCompilationError as err:
+                        self.assertIn("UNSUPPORTED", err.compiler_log)
+                    else:
+                        self.fail(f"Expected KernelCompilationError for {bad_wl}")
         finally:
             backend.destroy_context(ctx)
 
+    @unittest.skipUnless(
+        os.environ.get("CROSS_GPU_HW_TESTS") == "1",
+        "Live host GPU tests skipped unless CROSS_GPU_HW_TESTS=1 is set",
+    )
     def test_host_opencl_live_compile_and_golden_execution(self) -> None:
+        if sys.platform == "darwin":
+            self.skipTest("Apple OpenCL is deprecated and does not support modern compute pipelines")
+
         from cross_gpu.backends.opencl_backend import OpenCLBackend
 
         backend = OpenCLBackend()
@@ -1190,6 +1211,10 @@ class TestPackagedKernels(unittest.TestCase):
         finally:
             backend.destroy_context(ctx)
 
+    @unittest.skipUnless(
+        os.environ.get("CROSS_GPU_HW_TESTS") == "1",
+        "Live host GPU tests skipped unless CROSS_GPU_HW_TESTS=1 is set",
+    )
     def test_host_nvrtc_or_hiprtc_compile_when_present(self) -> None:
         from cross_gpu.backends.cuda_backend import CudaBackend
         from cross_gpu.backends.hip_backend import HipBackend

@@ -57,14 +57,20 @@ class RunReport:
 class _DeviceTelemetryState:
     """Thread-safe container tracking active phase, workload, and progress for 1 Hz tags."""
 
-    def __init__(self, initial_workload: str, workload_total: int = 1) -> None:
+    def __init__(
+        self,
+        initial_workload: str,
+        workload_total: int = 1,
+        initial_phase: str = "run",
+        phase_duration_s: float = 0.0,
+    ) -> None:
         self._lock = threading.Lock()
-        self.phase: str = "run"
+        self.phase: str = initial_phase
         self.workload: str = initial_workload
         self.workload_index: int = 1
         self.workload_total: int = max(1, workload_total)
         self.phase_start_mono: float = time.perf_counter()
-        self.phase_duration_s: float = 0.0
+        self.phase_duration_s: float = phase_duration_s
 
     def set(
         self,
@@ -242,6 +248,8 @@ class StressRunner:
         telemetry_state = _DeviceTelemetryState(
             self.tests[0] if self.tests else "",
             workload_total=len(self.tests),
+            initial_phase="warmup" if self.warmup_s > 0 else "run",
+            phase_duration_s=self.warmup_s if self.warmup_s > 0 else self.duration_s,
         )
 
         def on_sample(sample: TelemetrySample, elapsed_s: float) -> None:
