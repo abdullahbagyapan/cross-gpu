@@ -26,8 +26,12 @@ from cross_gpu.models import GPUDevice, WorkloadResult
 from cross_gpu.runner import StressRunner
 from cross_gpu.workloads import WORKLOAD_REGISTRY, list_workload_names
 
-_DURATION_PATTERN = re.compile(r"^\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+))\s*([smh])\s*$")
+_DURATION_PATTERN = re.compile(
+    r"^\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+))\s*(ms|[smh])\s*$",
+    re.IGNORECASE,
+)
 _DURATION_MULTIPLIERS: dict[str, float] = {
+    "ms": 1e-3,
     "s": 1.0,
     "m": 60.0,
     "h": 3600.0,
@@ -137,24 +141,37 @@ class DeterministicArgumentParser(argparse.ArgumentParser):
 
 
 def parse_duration(value: str, *, allow_zero: bool = False) -> float:
-    """Parse duration strings like '60s', '5m', '1.5h' into seconds."""
+    """Parse duration strings like '500ms', '60s', '5m', '1.5h' into seconds."""
     if not isinstance(value, str):
         raise UsageError(f"Invalid duration {value!r}")
     match = _DURATION_PATTERN.match(value)
     if not match:
         raise UsageError(
-            f"Malformed duration {value!r}; expected positive number with s, m, or h suffix"
+            f"Malformed duration {value!r}; expected positive number with ms, s, m, or h suffix"
         )
     magnitude = float(match.group(1))
-    unit = match.group(2)
+    unit = match.group(2).lower()
     if not math.isfinite(magnitude):
         raise UsageError(f"Invalid duration {value!r}")
-    seconds = magnitude * _DURATION_MULTIPLIERS[unit]
+    seconds = magnitude / 1000.0 if unit == "ms" else magnitude * _DURATION_MULTIPLIERS[unit]
     if seconds < 0 or (not allow_zero and seconds == 0):
         raise UsageError(
             f"Duration must be {'>= 0' if allow_zero else '> 0'}, got {value!r}"
         )
     return seconds
+
+
+def format_duration(seconds: float) -> str:
+    """Format a duration in seconds cleanly using ms for sub-second values and s otherwise."""
+    safe = max(0.0, float(seconds))
+    if safe < 1.0:
+        ms = int(round(safe * 1000.0))
+        if ms >= 1000:
+            return "1s"
+        return f"{ms}ms"
+    if abs(safe - round(safe)) < 1e-6:
+        return f"{int(round(safe))}s"
+    return f"{safe:.1f}s"
 
 
 def parse_device_arg(value: str) -> int | None:
@@ -316,14 +333,14 @@ def build_parser(
     run_p.add_argument(
         "--duration",
         default="60s",
-        help="Duration per workload such as 60s, 5m, 1h (default: 60s)",
+        help="Duration per workload such as 500ms, 60s, 5m, 1h (default: 60s)",
     )
     run_p.add_argument(
         "--warmup",
         nargs="?",
         const="5s",
         default="0s",
-        help="Warmup duration before each workload (default: 5s if omitted value, 0s if omitted)",
+        help="Warmup duration before each workload such as 250ms, 5s (default: 5s if omitted value, 0s if omitted)",
     )
     run_p.add_argument(
         "--backend",
@@ -434,10 +451,14 @@ def _format_duration_span(elapsed_s: float, total_s: float) -> str:
     safe_elapsed = max(0.0, float(elapsed_s))
     if safe_total > 0.0:
         safe_elapsed = min(safe_elapsed, safe_total)
-    if safe_total >= 1.0 and abs(safe_total - round(safe_total)) < 1e-6:
-        return f"{int(round(safe_elapsed))}s/{int(round(safe_total))}s"
     if safe_total == 0.0:
-        return f"{int(round(safe_elapsed))}s/0s"
+        return f"{format_duration(safe_elapsed)}/0s"
+    if safe_total < 1.0:
+        total_ms = max(1, int(round(safe_total * 1000.0)))
+        elapsed_ms = min(total_ms, int(round(safe_elapsed * 1000.0)))
+        return f"{elapsed_ms}ms/{total_ms}ms"
+    if abs(safe_total - round(safe_total)) < 1e-6:
+        return f"{int(round(safe_elapsed))}s/{int(round(safe_total))}s"
     return f"{safe_elapsed:.1f}s/{safe_total:.1f}s"
 
 
@@ -554,7 +575,7 @@ def format_run_summary_text(results: Sequence[WorkloadResult], exit_code: ExitCo
             rate_str,
             total_str,
             str(res.errors),
-            f"{res.duration_s:.2f}s",
+            format_duration(res.duration_s) if 0.0 < res.duration_s < 1.0 else f"{res.duration_s:.2f}s",
             str(int(res.exit_code)),
         )
         if include_reason:
@@ -769,7 +790,8 @@ def main(
                     )
                     out.write(
                         f"Starting cross-gpu run on [{devs_desc}] | "
-                        f"tests={len(tests)} duration={duration_s:.2f}s warmup={warmup_s:.2f}s\n"
+                        f"tests={len(tests)} duration={format_duration(duration_s)} "
+                        f"warmup={format_duration(warmup_s)}\n"
                     )
                     out.flush()
 

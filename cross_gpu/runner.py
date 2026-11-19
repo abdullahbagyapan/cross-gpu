@@ -457,6 +457,7 @@ class StressRunner:
             backend=plugin,
             backend_context=backend_ctx,
             spec=spec,
+            state={"target_duration_s": self.duration_s},
         )
 
         try:

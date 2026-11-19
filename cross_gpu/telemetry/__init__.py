@@ -88,6 +88,8 @@ class TelemetrySampler:
                 sample = self.reader_fn(self.device)
             except Exception:
                 sample = TelemetrySample()
+            if self._stop_event.is_set():
+                break
             try:
                 self.callback(sample, elapsed)
             except Exception:

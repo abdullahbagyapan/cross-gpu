@@ -500,6 +500,7 @@ class BandwidthD2DExecutor(WorkloadExecutor):
             copies_per_step = calibrate_iterations(
                 lambda n: self._dispatch_copies(ctx, n),
                 lambda: backend.synchronize(bctx),
+                max_duration_s=ctx.state.get("target_duration_s"),
                 min_iters=1,
                 max_iters=BANDWIDTH_MAX_TRANSFERS_PER_STEP,
             )
@@ -625,6 +626,7 @@ class BandwidthH2DExecutor(WorkloadExecutor):
             transfers_per_step = calibrate_iterations(
                 lambda n: self._dispatch_h2d(ctx, n),
                 lambda: backend.synchronize(bctx),
+                max_duration_s=ctx.state.get("target_duration_s"),
                 min_iters=1,
                 max_iters=BANDWIDTH_MAX_TRANSFERS_PER_STEP,
             )
@@ -729,6 +731,7 @@ class BandwidthD2HExecutor(WorkloadExecutor):
             transfers_per_step = calibrate_iterations(
                 lambda n: self._dispatch_d2h(ctx, n),
                 lambda: backend.synchronize(bctx),
+                max_duration_s=ctx.state.get("target_duration_s"),
                 min_iters=1,
                 max_iters=BANDWIDTH_MAX_TRANSFERS_PER_STEP,
             )

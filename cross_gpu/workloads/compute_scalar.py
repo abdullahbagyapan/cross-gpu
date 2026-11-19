@@ -168,6 +168,7 @@ class BaseComputeKernelExecutor(WorkloadExecutor):
             iterations = calibrate_iterations(
                 _launch_probe,
                 lambda: backend.synchronize(bctx),
+                max_duration_s=ctx.state.get("target_duration_s"),
                 min_iters=1,
                 max_iters=self._max_calibration_iters(ctx),
                 round_multiple=self.calibration_round_multiple,

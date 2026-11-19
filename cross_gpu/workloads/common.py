@@ -185,11 +185,15 @@ def compute_launch_geometry(
     return (grid_x, 1, 1), (block_x, 1, 1), total_threads
 
 
+SHORT_RUN_MIN_DISPATCH_S = 0.005
+
+
 def calibrate_iterations(
     launch_once: Callable[[int], None],
     synchronize: Callable[[], None],
     *,
     target_s: float = WATCHDOG_TARGET_DISPATCH_S,
+    max_duration_s: float | None = None,
     min_iters: int = DEFAULT_MIN_ITERATIONS,
     max_iters: int = DEFAULT_MAX_ITERATIONS,
     probe_iters: int = 1,
@@ -200,7 +204,16 @@ def calibrate_iterations(
     clamped_min = max(1, int(min_iters))
     clamped_max = max(clamped_min, int(max_iters))
     mult = max(1, int(round_multiple))
-    clamped_target = max(WATCHDOG_MIN_DISPATCH_S, min(WATCHDOG_MAX_DISPATCH_S, float(target_s)))
+    if max_duration_s is not None and 0.0 < float(max_duration_s) < 1.0:
+        short_cap = max(
+            SHORT_RUN_MIN_DISPATCH_S,
+            min(WATCHDOG_TARGET_DISPATCH_S, float(max_duration_s) * 0.2),
+        )
+        clamped_target = max(SHORT_RUN_MIN_DISPATCH_S, min(float(target_s), short_cap))
+        probe_threshold = min(CALIBRATION_PROBE_THRESHOLD_S, clamped_target * 0.5)
+    else:
+        clamped_target = max(WATCHDOG_MIN_DISPATCH_S, min(WATCHDOG_MAX_DISPATCH_S, float(target_s)))
+        probe_threshold = CALIBRATION_PROBE_THRESHOLD_S
 
     current_probe = max(clamped_min, min(clamped_max, int(probe_iters)))
 
@@ -213,7 +226,7 @@ def calibrate_iterations(
     elapsed = _measure(current_probe)
 
     # Re-probe with a larger batch if initial probe was too short for stable timing.
-    if elapsed < CALIBRATION_PROBE_THRESHOLD_S and current_probe < min(clamped_max, CALIBRATION_MAX_PROBE_ITERS):
+    if elapsed < probe_threshold and current_probe < min(clamped_max, CALIBRATION_MAX_PROBE_ITERS):
         stepped_probe = min(clamped_max, CALIBRATION_MAX_PROBE_ITERS, max(current_probe * 8, current_probe + 1))
         if stepped_probe > current_probe:
             current_probe = stepped_probe
