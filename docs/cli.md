@@ -231,7 +231,7 @@ Tally: passed=1 failed=0 unsupported=1 hardware_error=0 | Exit Code: 2 (INIT_ERR
 
 One JSON object per line (`run_start`, 1 Hz `telemetry` with usable-only `metrics`, `workload_result`, and final `run_summary`). Every `unsupported` result includes a concrete `"reason"` field:
 
-```json
+```ndjson
 {"type": "run_start", "timestamp": 1795052010.683784, "devices": [{"index": 0, "name": "Apple M2", "backend": "metal"}], "workloads": ["compute-fp32", "compute-fp64"], "duration_s": 0.5, "warmup_s": 0.0, "backend": "auto"}
 {"type": "telemetry", "timestamp": 1795052010.706361, "elapsed_s": 0.0, "phase": "run", "device": 0, "workload": "compute-fp32", "workload_index": 1, "workload_total": 2, "phase_elapsed_s": 0.016, "phase_duration_s": 0.5, "metrics": {"gpu_util_pct": 23.0}}
 {"type": "workload_result", "workload_index": 1, "workload_total": 2, "target_duration_s": 0.5, "device": 0, "device_name": "Apple M2", "backend": "metal", "workload": "compute-fp32", "category": "compute-fp", "status": "pass", "duration_s": 0.500152, "rate": 3108.7119, "rate_unit": "GFLOP/s", "total": 1554.8285, "total_unit": "GFLOP", "errors": 0, "message": "", "exit_code": 0}

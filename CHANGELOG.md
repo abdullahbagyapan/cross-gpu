@@ -23,6 +23,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Refactored `src/embed_binary.py` to load raw kernel source files directly via Python standard library `importlib.resources` with plain tuple in-memory cache keys and sanitized, metadata-validated disk cache artifacts (removing all opaque base64 blobs and digest hashing).
 - Renamed source directory directly to `src/` with relative imports while preserving the collision-free `cross_gpu` installed namespace.
 
+### Fixed
+- Replaced fragile `hipDeviceProp_t` struct offsets in `src/backends/hip_backend.py` with ROCm-stable `hipDeviceGetName`, `hipDeviceTotalMem`, and `hipDeviceGetAttribute` APIs plus an oversized opaque buffer scan for `gcnArchName`.
+- Fixed SONAME probing order across `HIP_LIB_CANDIDATES`, `NVRTC_LIB_CANDIDATES`, and `HIPRTC_LIB_CANDIDATES` so versioned `.so.X` runtime libraries are always tried before unversioned `-dev` `.so` symlinks.
+- Corrected Level Zero `ZE_RESULT_ERROR_DEVICE_REQUIRES_RESET` (`0x70000006`) and `ZE_RESULT_ERROR_DEVICE_IN_LOW_POWER_STATE` (`0x70000007`) fault constants and filtered frontend `-D` macros from SPIR-V `zeModuleCreate` build flags.
+- Hardened CUDA/HIP cleanup on poisoned contexts, OpenCL `size_t` work-group queries, Metal `launch_kernel` encoder/command-buffer exception cleanup and worker-thread autorelease pooling, read-only `memoryview` buffer copies, NVML lazy-init thread safety, Linux sysfs `PermissionError` resilience, and `format_duration(0.0)` formatting (`0s`).
+
 ## [0.1.0] - 2026-11-19
 
 ### Added

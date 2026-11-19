@@ -9,7 +9,7 @@ CrossGPU ships 5 zero-dependency `ctypes` backend plugins under `src/backends/`.
 ### CUDA (`cuda`, priority `100`)
 
 - **Runtime Libraries:** `libcuda.so.1`, fallback `libcuda.so` (CUDA Driver API).
-- **Runtime Compiler:** `libnvrtc.so.12`, fallback `libnvrtc.so`, `libnvrtc.so.11.2` (`ctypes`). Emits native `cubin` when `nvrtcGetCUBIN` is available for `sm_XY`, falling back to `ptx`.
+- **Runtime Compiler:** `libnvrtc.so.12`, fallback `libnvrtc.so.11.2`, `libnvrtc.so` (`ctypes`). Emits native `cubin` when `nvrtcGetCUBIN` is available for `sm_XY`, falling back to `ptx`.
 - **Hardware Identification:** PCIe BDF (`cuDeviceGetPCIBusId` / domain+bus+device attributes) and 16-byte GPU UUID (`cuDeviceGetUuid_v2`).
 - **Error Classification:**
   - `HARDWARE_ERROR (4)`: `CUDA_ERROR_ECC_UNCORRECTABLE` (`214`), `CUDA_ERROR_NVLINK_UNCORRECTABLE` (`217`), `CUDA_ERROR_ILLEGAL_ADDRESS` (`700`), `CUDA_ERROR_LAUNCH_TIMEOUT` (`702`), `CUDA_ERROR_CONTEXT_IS_DESTROYED` (`709`), `CUDA_ERROR_ASSERT` (`710`), `CUDA_ERROR_HARDWARE_STACK_ERROR` (`714`), `CUDA_ERROR_ILLEGAL_INSTRUCTION` (`715`), `CUDA_ERROR_MISALIGNED_ADDRESS` (`716`), `CUDA_ERROR_INVALID_ADDRESS_SPACE` (`717`), `CUDA_ERROR_INVALID_PC` (`718`), `CUDA_ERROR_LAUNCH_FAILED` (`719`).
@@ -17,9 +17,9 @@ CrossGPU ships 5 zero-dependency `ctypes` backend plugins under `src/backends/`.
 
 ### AMD HIP (`hip`, priority `100`)
 
-- **Runtime Libraries:** `libamdhip64.so.6`, fallback `libamdhip64.so`, `libamdhip64.so.5` (supports both ROCm 6.0+ `hipDeviceProp_tR0600` and legacy ROCm 5.x ABI layouts).
-- **Runtime Compiler:** `libhiprtc.so.6`, fallback `libhiprtc.so`, `libhiprtc.so.5`, `libamdhip64.so.6`, `libamdhip64.so` (`ctypes`). Emits `hsaco` compiled with `--offload-arch=<gfx...>`.
-- **Hardware Identification:** PCIe BDF (`hipDeviceGetPCIBusId` / property fields) and 16-byte UUID (`hipDeviceGetUuid`).
+- **Runtime Libraries:** `libamdhip64.so.6`, fallback `libamdhip64.so.5`, `libamdhip64.so` (queries ROCm-stable `hipDeviceGetName`, `hipDeviceTotalMem`, and `hipDeviceGetAttribute` APIs without fragile `hipDeviceProp_t` struct offsets, scanning an oversized opaque buffer solely for `gcnArchName`).
+- **Runtime Compiler:** `libhiprtc.so.6`, fallback `libhiprtc.so.5`, `libamdhip64.so.6`, `libamdhip64.so.5`, `libhiprtc.so`, `libamdhip64.so` (`ctypes`). Emits `hsaco` compiled with `--offload-arch=<gfx...>`.
+- **Hardware Identification:** PCIe BDF (`hipDeviceGetPCIBusId` / `hipDeviceGetAttribute`) and 16-byte UUID (`hipDeviceGetUuid`).
 - **Linux Permissions:** Requires read/write access to `/dev/kfd` and `/dev/dri/renderD*` (`render` and/or `video` group membership).
 - **Error Classification:**
   - `HARDWARE_ERROR (4)`: `hipErrorECCNotCorrectable` (`214`), `hipErrorIllegalAddress` (`700`), `hipErrorLaunchTimeOut` (`702`), `hipErrorContextIsDestroyed` (`709`), `hipErrorAssert` (`710`), `hipErrorHardwareStackError` (`714`), `hipErrorIllegalInstruction` (`715`), `hipErrorMisalignedAddress` (`716`), `hipErrorLaunchFailure` (`719`).
@@ -32,7 +32,7 @@ CrossGPU ships 5 zero-dependency `ctypes` backend plugins under `src/backends/`.
 - **Hardware Identification:** PCIe BDF (`zeDevicePciGetPropertiesExt`) and 16-byte device UUID (`zeDeviceGetProperties`).
 - **Linux Permissions:** Requires read/write access to `/dev/dri/renderD*` (`render` / `video` group membership); permission denials are detected and surfaced on `stderr`.
 - **Error Classification:**
-  - `HARDWARE_ERROR (4)`: `ZE_RESULT_ERROR_DEVICE_LOST` (`0x70000001`), `ZE_RESULT_ERROR_DEVICE_REQUIRES_RESET` (`0x70000005`), `ZE_RESULT_ERROR_DEVICE_IN_LOW_POWER_STATE` (`0x70000006`).
+  - `HARDWARE_ERROR (4)`: `ZE_RESULT_ERROR_DEVICE_LOST` (`0x70000001`), `ZE_RESULT_ERROR_DEVICE_REQUIRES_RESET` (`0x70000006`), `ZE_RESULT_ERROR_DEVICE_IN_LOW_POWER_STATE` (`0x70000007`).
   - `INIT_ERROR (2)`: missing `libze_loader.so.1`, missing SPIR-V compiler toolchain (`clang`+`llvm-spirv` and `ocloc`), `zeInit` failure, or module build error.
 
 ### Apple Metal (`metal`, priority `100`)
