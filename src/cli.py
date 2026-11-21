@@ -39,7 +39,9 @@ _DURATION_MULTIPLIERS: dict[str, float] = {
 }
 
 _STATUS_LABELS: dict[str, str] = {
+    "pass": "PASSED",
     "passed": "PASSED",
+    "fail": "FAILED",
     "failed": "FAILED",
     "unsupported": "UNSUPPORTED",
     "init_error": "INIT_ERROR",
@@ -513,7 +515,7 @@ def format_progress_prefix(
 
 
 def format_status_badge(status: str, use_color: bool = False) -> str:
-    """Format status with optional ANSI colors matching CrossCPU styling."""
+    """Format workload status with optional ANSI colors."""
     label = _STATUS_LABELS.get(status.lower(), status.upper())
     if not use_color:
         return label
@@ -590,7 +592,7 @@ def format_run_footer_text(
     results: Sequence[WorkloadResult],
     exit_code: ExitCode,
 ) -> str:
-    """Format the closing summary line matching CrossCPU."""
+    """Format the closing summary line for text mode."""
     passed = sum(1 for r in results if r.status in ("pass", "passed"))
     failed = sum(1 for r in results if r.status in ("fail", "failed"))
     unsupported = sum(1 for r in results if r.status == "unsupported")
@@ -868,9 +870,6 @@ def main(
                 is_tty = False
 
             no_banner = bool(getattr(args, "no_banner", False))
-            if fmt != "json":
-                maybe_print_banner(out, no_banner=no_banner, json_mode=False)
-
             progress_active = [False]
             table_header_printed = [False]
             started_devices: list[dict[str, Any]] = []
@@ -887,6 +886,7 @@ def main(
             ) -> None:
                 if table_header_printed[0] or fmt == "json":
                     return
+                maybe_print_banner(out, no_banner=no_banner, json_mode=False)
                 if devs_list:
                     devs_desc = ", ".join(
                         f"{d['index']}:{d['name']} ({d['backend']})"
