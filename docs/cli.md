@@ -11,7 +11,7 @@ cross-gpu [-v|--verbose] list [--format text|json] [--json] [-v|--verbose]
 cross-gpu [-v|--verbose] info [--format text|json] [--json] [-v|--verbose]
 cross-gpu [-v|--verbose] run [--device all|N] [--test TEST|all] \
                              [--duration TIME] [--warmup [TIME]] \
-                             [--backend auto|PLUGIN_NAME] \
+                             [--backend auto|PLUGIN_NAME] [--no-banner] \
                              [--format text|json] [--json] [-v|--verbose]
 cross-gpu --help
 cross-gpu --version
