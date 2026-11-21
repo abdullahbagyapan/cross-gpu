@@ -95,7 +95,7 @@ jobs:
                   p for p in rel_paths
                   if "__pycache__" in p
                   or p.endswith((".pyc", ".pyo", ".spv", ".cubin", ".ptx", ".hsaco", ".metallib", ".so", ".dylib"))
-                  or p.startswith((".git/", "dist/", "build/"))
+                  or p.startswith((".git/", "dist/", "build/", "src/telemetry"))
               ]
               assert not forbidden, f"Forbidden artifacts in sdist: {forbidden}"
 
@@ -125,4 +125,4 @@ jobs:
           "${VENV_DIR}/bin/cross-gpu" info --json | "${VENV_DIR}/bin/python" -c "import json, sys; data = json.load(sys.stdin); assert isinstance(data.get('devices'), list)"
           "${VENV_DIR}/bin/python" -m cross_gpu --version
           "${VENV_DIR}/bin/python" -c "import importlib.metadata as m; assert not m.requires('cross-gpu')"
-          "${VENV_DIR}/bin/python" -c "import sysconfig, pathlib; sp = pathlib.Path(sysconfig.get_path('purelib')); assert (sp / 'cross_gpu').is_dir(); assert not (sp / 'src').exists()"
+          "${VENV_DIR}/bin/python" -c "import sysconfig, pathlib; sp = pathlib.Path(sysconfig.get_path('purelib')); assert (sp / 'cross_gpu').is_dir(); assert not (sp / 'src').exists(); assert not (sp / 'cross_gpu' / 'telemetry').exists()"
