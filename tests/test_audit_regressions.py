@@ -341,6 +341,8 @@ class TestAuditRegressions(unittest.TestCase):
             sel_status = 7
             sel_release = 8
             sel_retain = 9
+            sel_blitCommandEncoder = 10
+            sel_copyFromBuffer = 11
 
             def objc_autoreleasePoolPush(self):
                 events.append("pool_push")
@@ -367,10 +369,15 @@ class TestAuditRegressions(unittest.TestCase):
                     return 0xCAFE
                 if sel == self.sel_computeCommandEncoder:
                     return 0xBEEF
+                if sel == self.sel_blitCommandEncoder:
+                    return 0xB117
                 return 0
 
             def msg_void_ptr(self, obj, sel, ptr):
                 pass
+
+            def msg_void_blit(self, enc, sel, src, src_off, dst, dst_off, size):
+                raise RuntimeError("simulated blit failure")
 
             def msg_void(self, obj, sel):
                 if sel == self.sel_endEncoding:
@@ -415,6 +422,13 @@ class TestAuditRegressions(unittest.TestCase):
             backend.synchronize(ctx)
             self.assertEqual(events, ["pool_push", f"wait:{0xFACE}", f"release:{0xFACE}", "pool_pop"])
 
+            # _blit_copy() ends active blit encoder and releases cmd_buf if blit fails.
+            events.clear()
+            with self.assertRaises(RuntimeError):
+                backend._blit_copy(backend._api, ctx, 0x10, 0x20, 64, "test blit")  # type: ignore[arg-type]
+            self.assertIn(f"endEncoding:{0xB117}", events)
+            self.assertIn(f"release:{0xCAFE}", events)
+
     def test_readonly_memoryview_host_pointer_and_write_host_buffer(self) -> None:
         ro_view = memoryview(b"CrossGPU-RO-Buffer")
         self.assertTrue(ro_view.readonly)
@@ -445,6 +459,7 @@ class TestAuditRegressions(unittest.TestCase):
         repo_root = Path(__file__).resolve().parent.parent
         self.assertFalse((repo_root / "cross_gpu").exists())
         self.assertFalse((repo_root / "src" / "cross_gpu").exists())
+        self.assertFalse((repo_root / "src" / ("tele" + "metry")).exists())
         self.assertTrue((repo_root / "src" / "__init__.py").is_file())
 
         # Zero absolute cross_gpu imports inside src/
@@ -463,12 +478,21 @@ class TestAuditRegressions(unittest.TestCase):
                         f"Absolute cross_gpu import in {py_file}:{node.lineno}",
                     )
 
-        # Zero legacy opaque blob or digest artifacts in src/
-        forbidden_tokens = ("zlib" + "_b64", "EMBEDDED" + "_KERNELS", "hash" + "lib", "sha" + "256")
+        # Zero legacy opaque blob, digest, or removed sensor-polling artifacts in src/
+        forbidden_tokens = (
+            "zlib" + "_b64",
+            "EMBEDDED" + "_KERNELS",
+            "hash" + "lib",
+            "sha" + "256",
+            "tele" + "metry",
+            "nd" + "json",
+            "nv" + "ml",
+        )
         for py_file in sorted((repo_root / "src").rglob("*.py")):
             text = py_file.read_text(encoding="utf-8")
+            lower_text = text.lower()
             for tok in forbidden_tokens:
-                self.assertNotIn(tok, text, f"Forbidden token {tok!r} in {py_file}")
+                self.assertNotIn(tok.lower(), lower_text, f"Forbidden token {tok!r} in {py_file}")
             first_line = text.splitlines()[0]
             self.assertIn("SPDX-License-Identifier: MIT", first_line, f"Missing SPDX in {py_file}")
 

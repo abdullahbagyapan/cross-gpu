@@ -728,14 +728,80 @@ class TestCLI(unittest.TestCase):
         self.assertFalse(maybe_print_banner(sink_no_banner, no_banner=True, env={"TERM": "xterm"}))
         self.assertEqual(sink_no_banner.getvalue(), "")
 
-        # status badge colors
+        # status badge colors (both canonical and legacy aliases)
         from src.cli import format_status_badge
 
         self.assertEqual(format_status_badge("passed", False), "PASSED")
-        self.assertIn("\033[32;1m", format_status_badge("passed", True))
-        self.assertIn("\033[31;1m", format_status_badge("failed", True))
-        self.assertIn("\033[33m", format_status_badge("unsupported", True))
-        self.assertIn("\033[31;1m", format_status_badge("hardware_error", True))
+        self.assertEqual(format_status_badge("pass", False), "PASSED")
+        self.assertIn("\033[32;1mPASSED\033[0m", format_status_badge("passed", True))
+        self.assertIn("\033[32;1mPASSED\033[0m", format_status_badge("pass", True))
+        self.assertIn("\033[31;1mFAILED\033[0m", format_status_badge("failed", True))
+        self.assertIn("\033[31;1mFAILED\033[0m", format_status_badge("fail", True))
+        self.assertIn("\033[33mUNSUPPORTED\033[0m", format_status_badge("unsupported", True))
+        self.assertIn("\033[31;1mHARDWARE_ERROR\033[0m", format_status_badge("hardware_error", True))
+
+        # No subcommand prints help to stdout and exits 1 (USAGE_ERROR)
+        out_empty, err_empty = io.StringIO(), io.StringIO()
+        rc_empty = main([], stdout=out_empty, stderr=err_empty)
+        self.assertEqual(rc_empty, ExitCode.USAGE_ERROR)
+        self.assertEqual(err_empty.getvalue(), "")
+        self.assertIn("usage: cross-gpu", out_empty.getvalue())
+
+        # Interactive TTY progress emits ephemeral \r\033[K progress and suppresses banner on 0-GPU INIT_ERROR
+        out_no_gpu, err_no_gpu = _MockTTY(), io.StringIO()
+        with mock.patch.dict("os.environ", {"TERM": "xterm-256color"}, clear=False):
+            rc_no_gpu = main(
+                ["run", "--test", "compute-fp32", "--duration", "50ms"],
+                stdout=out_no_gpu,
+                stderr=err_no_gpu,
+                discover_fn=lambda: ([], {}, {"cuda": "libcuda.so.1 not found"}),
+            )
+        self.assertEqual(rc_no_gpu, ExitCode.INIT_ERROR)
+        self.assertNotIn("CrossGPU v", out_no_gpu.getvalue())
+
+        dev = _sample_device()
+
+        class _ProgressRunner:
+            def __init__(self, *, event_callback=None, **kwargs):
+                self._cb = event_callback
+
+            def run(self):
+                from src.runner import RunReport
+
+                self._cb({"type": "run_start", "devices": [{"index": 0, "name": "NVIDIA RTX 4090", "backend": "cuda"}]})
+                self._cb(
+                    {
+                        "type": "progress",
+                        "device": 0,
+                        "workload": "compute-fp32",
+                        "workload_index": 1,
+                        "workload_total": 2,
+                        "phase": "run",
+                        "phase_elapsed_s": 3.0,
+                        "phase_duration_s": 5.0,
+                    }
+                )
+                res = WorkloadResult(
+                    0, "NVIDIA RTX 4090", "cuda", "compute-fp32", "compute-fp",
+                    "passed", 5.0, 100.0, "GFLOP/s", 500.0, "GFLOP", 0, "", "", ExitCode.SUCCESS,
+                )
+                self._cb({"type": "workload_result", "workload_index": 1, "workload_total": 2, "target_duration_s": 5.0, **res.to_dict()})
+                return RunReport(exit_code=ExitCode.SUCCESS, results=[res])
+
+        out_tty, err_tty = _MockTTY(), io.StringIO()
+        with mock.patch.dict("os.environ", {"TERM": "xterm-256color"}, clear=False):
+            rc_tty = main(
+                ["run", "--device", "0", "--test", "compute-fp32", "--duration", "5s"],
+                stdout=out_tty,
+                stderr=err_tty,
+                discover_fn=lambda: ([dev], {"cuda": _FaultyHardwarePlugin()}),
+                runner_factory=_ProgressRunner,
+            )
+        self.assertEqual(rc_tty, ExitCode.SUCCESS)
+        tty_text = out_tty.getvalue()
+        self.assertIn("\r\033[K[01/02 compute-fp32 | 3s/5s]", tty_text)
+        self.assertIn("\r\033[Kcompute-fp32", tty_text)
+        self.assertIn("\033[32;1mPASSED\033[0m", tty_text)
 
 
 if __name__ == "__main__":
