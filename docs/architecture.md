@@ -1,6 +1,6 @@
 # CrossGPU Architecture
 
-CrossGPU is a cross-platform GPU discovery, hardware telemetry, and stress-testing CLI targeting **Linux** (`x86_64`, `aarch64`) and **macOS** (`arm64`, `x86_64`), written exclusively with the **Python 3.10+ standard library** and **zero external Python dependencies**.
+CrossGPU is a cross-platform GPU discovery and stress-testing CLI targeting **Linux** (`x86_64`, `aarch64`) and **macOS** (`arm64`, `x86_64`), written exclusively with the **Python 3.10+ standard library** and **zero external Python dependencies**.
 
 ---
 
@@ -25,13 +25,13 @@ backends/registry.py                                  workloads/registry.py
                                      v
                          runner.py (StressRunner)
                multi-GPU worker threads + SIGINT/SIGTERM trap
-                      |                               |
-                      v                               v
-               embed_binary.py                   telemetry/
-       importlib.resources raw loader        1 Hz TelemetrySampler
-       runtime compilers (NVRTC/hipRTC/      (NVML, Linux DRM/hwmon,
-        clang+llvm-spirv/ocloc/xcrun)         macOS ioreg) + sanitizer
-       plain-tuple memory + XDG disk cache
+                                     |
+                                     v
+                              embed_binary.py
+                      importlib.resources raw loader
+                      runtime compilers (NVRTC/hipRTC/
+                       clang+llvm-spirv/ocloc/xcrun)
+                      plain-tuple memory + XDG disk cache
 ```
 
 ---
@@ -40,8 +40,8 @@ backends/registry.py                                  workloads/registry.py
 
 | Path | Responsibility |
 |---|---|
-| `src/cli.py`, `src/__main__.py` | `DeterministicArgumentParser`, `ms`/`s`/`m`/`h` duration parser, `difflib` typo hints, `text`/JSON/NDJSON formatters, `-v`/`--verbose` logger, strict `stdout`/`stderr` routing |
-| `src/models.py` | Dataclasses for `DeviceCapabilities`, `BackendDeviceInfo`, `BackendBinding`, `GPUDevice`, `TelemetrySample`, `StepMetrics`, `VerificationResult`, and `WorkloadResult` |
+| `src/cli.py`, `src/__main__.py`, `src/banner.py` | `DeterministicArgumentParser`, `ms`/`s`/`m`/`h` duration parser, `difflib` typo hints, `text`/JSON formatters, interactive ASCII banner & color guards, `-v`/`--verbose` logger, strict `stdout`/`stderr` routing |
+| `src/models.py` | Dataclasses for `DeviceCapabilities`, `BackendDeviceInfo`, `BackendBinding`, `GPUDevice`, `StepMetrics`, `VerificationResult`, and `WorkloadResult` |
 | `src/exit_codes.py` | Severity-ordered `ExitCode` (`0..4`), typed exceptions, and `aggregate_exit_codes` (`max`) |
 | `src/backends/` | `BackendPlugin` ABC + `ctypes` ABI helpers (`base.py`), plugin discovery (`registry.py`), and 5 native plugins (`cuda`, `hip`, `levelzero`, `metal`, `opencl`) |
 | `src/dedup.py` | Backend priority ordering and 3-tier physical GPU deduplication |
@@ -49,13 +49,12 @@ backends/registry.py                                  workloads/registry.py
 | `src/embed_binary.py` | `importlib.resources` raw kernel loader, `verify`/`list` CLI, 5 runtime compiler adapters, and 2-tier compile cache |
 | `src/workloads/` | 20-workload registry, golden verification math, safe VRAM sizing, dynamic batch calibration, and 20 concrete `WorkloadExecutor` classes |
 | `src/runner.py` | Multi-GPU execution coordinator, warmup exclusion, periodic verification checkpoints, and signal-safe cleanup |
-| `src/telemetry/` | 1 Hz drift-compensated `TelemetrySampler` (`__init__.py`) and platform readers + sensor sanitization (`readers.py`) |
 
 ---
 
 ## 3. Zero-Dependency `ctypes` Strategy
 
-- **Versioned SONAMEs & Standard Frameworks:** Shared libraries are resolved dynamically via `ctypes.CDLL` using standard versioned SONAMEs (`libcuda.so.1`, `libnvrtc.so.12`, `libamdhip64.so.6`, `libhiprtc.so.6`, `libze_loader.so.1`, `libOpenCL.so.1`, `libnvidia-ml.so.1`) and standard macOS paths (`/usr/lib/libobjc.A.dylib`, `/System/Library/Frameworks/Metal.framework/Metal`, `/System/Library/Frameworks/OpenCL.framework/OpenCL`). No hardcoded distro library paths are used on Linux, so `LD_LIBRARY_PATH` and `DYLD_LIBRARY_PATH` work naturally.
+- **Versioned SONAMEs & Standard Frameworks:** Shared libraries are resolved dynamically via `ctypes.CDLL` using standard versioned SONAMEs (`libcuda.so.1`, `libnvrtc.so.12`, `libamdhip64.so.6`, `libhiprtc.so.6`, `libze_loader.so.1`, `libOpenCL.so.1`) and standard macOS paths (`/usr/lib/libobjc.A.dylib`, `/System/Library/Frameworks/Metal.framework/Metal`, `/System/Library/Frameworks/OpenCL.framework/OpenCL`). No hardcoded distro library paths are used on Linux, so `LD_LIBRARY_PATH` and `DYLD_LIBRARY_PATH` work naturally.
 - **Explicit `argtypes` / `restype` ABI Safety:** Every C symbol is bound via `bind_c_symbol` or `bind_optional_c_symbol` (and `_bind_objc_msg` with `ctypes.CFUNCTYPE` for Objective-C `objc_msgSend` on Apple Silicon `arm64` and Intel `x86_64`). Explicit pointer widths (`c_void_p`, `c_size_t`, `c_uint64`, `c_int32`) prevent 64-bit pointer truncation and variadic calling-convention mismatches across `x86_64` and `arm64`.
 - **Isolated Plugin Failure Handling:** `enumerate_all_backend_devices_with_diagnostics()` probes every plugin independently inside guarded `try`/`except` blocks. A missing runtime library, failed driver init, or Linux `/dev/dri/renderD*` / `/dev/kfd` permission error records a concise diagnostic reason (`backend -> reason`) without impacting healthy plugins.
 
@@ -122,5 +121,5 @@ Before compilation, `compile_kernel_runtime(...)` checks `DeviceCapabilities` (r
 ## 6. Concurrency, Signals & Clean Resource Teardown
 
 - **Multi-GPU Execution:** When targeting multiple GPUs (`--device all`), `StressRunner.run()` spawns one worker thread per physical GPU so all devices stress concurrently, synchronizing event emission through a shared lock (`_emit_lock`).
-- **Signal Handling (`SIGINT` / `SIGTERM`):** When invoked on the main thread, `StressRunner` installs signal handlers that set a shared `threading.Event` (`_stop_event`) and restores previous handlers in a `finally` block. Worker loops check `_stop_event` between calibrated dispatches (`50–200 ms`, or shorter for sub-second `--duration`), stop `TelemetrySampler` immediately via `Event.wait()`, and exit promptly.
-- **Deterministic Teardown:** Every `WorkloadExecutor` releases device buffers, pinned host buffers, and loaded kernel modules inside idempotent `cleanup()` called from a `finally` block; every device worker stops its `TelemetrySampler` and calls `plugin.destroy_context(backend_ctx)` inside its outer `finally` block, even after compute errors, hardware faults, or signals.
+- **Signal Handling (`SIGINT` / `SIGTERM`):** When invoked on the main thread, `StressRunner` installs signal handlers that set a shared `threading.Event` (`_stop_event`) and restores previous handlers in a `finally` block. Worker loops check `_stop_event` between calibrated dispatches (`50–200 ms`, or shorter for sub-second `--duration`) and exit promptly.
+- **Deterministic Teardown:** Every `WorkloadExecutor` releases device buffers, pinned host buffers, and loaded kernel modules inside idempotent `cleanup()` called from a `finally` block; every device worker calls `plugin.destroy_context(backend_ctx)` inside its outer `finally` block, even after compute errors, hardware faults, or signals.

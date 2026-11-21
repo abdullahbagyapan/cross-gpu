@@ -53,7 +53,7 @@ All 90 raw GPU kernel source files under `src/kernels/` are declared as package 
 
 ```toml
 [tool.setuptools]
-packages = ["cross_gpu", "cross_gpu.backends", "cross_gpu.telemetry", "cross_gpu.workloads"]
+packages = ["cross_gpu", "cross_gpu.backends", "cross_gpu.workloads"]
 package-dir = {"cross_gpu" = "src"}
 include-package-data = true
 
@@ -79,7 +79,7 @@ At runtime, `src/embed_binary.py` reads kernels strictly via `importlib.resource
   - **Explicit override:** `$CROSS_GPU_CACHE_DIR`.
   - **Disable disk cache:** `CROSS_GPU_NO_CACHE=1` (or `true` / `yes`, case-insensitive) completely bypasses disk cache reads and writes (in-memory caching only) for ephemeral containers, CI, and read-only chroots.
 - If the cache directory is read-only or `$HOME` is unset, `RuntimeBinaryCache` degrades automatically to in-memory-only caching without raising errors.
-- Native shared libraries use versioned SONAMEs (`libcuda.so.1`, `libnvrtc.so.12`, `libamdhip64.so.6`, `libze_loader.so.1`, `libOpenCL.so.1`, `libnvidia-ml.so.1`) with zero hardcoded Linux paths, so `LD_LIBRARY_PATH` and `DYLD_LIBRARY_PATH` work naturally.
+- Native shared libraries use versioned SONAMEs (`libcuda.so.1`, `libnvrtc.so.12`, `libamdhip64.so.6`, `libze_loader.so.1`, `libOpenCL.so.1`) with zero hardcoded Linux paths, so `LD_LIBRARY_PATH` and `DYLD_LIBRARY_PATH` work naturally.
 
 ---
 

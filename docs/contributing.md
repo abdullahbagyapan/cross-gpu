@@ -75,6 +75,6 @@ Keep commits small, logical, and independently green using [Conventional Commits
 | `refactor(<scope>): ...` | `refactor(embed): load raw kernel files via importlib.resources without blobs or sha256` |
 | `build(<scope>): ...` | `build(packaging): ensure complete sdist contents and verify archive in CI` |
 | `ci(<scope>): ...` | `ci(github): verify packaged kernel loading from outside source tree` |
-| `test(<scope>): ...` | `test(cli,telemetry): cover ms durations, prompt sampler stop, and unusable telemetry filtering` |
-| `docs(<scope>): ...` | `docs(reference): document backends, 20 workloads, and 1 Hz telemetry module` |
+| `test(<scope>): ...` | `test(cli): cover ms durations, banner color guards, and single-document JSON output` |
+| `docs(<scope>): ...` | `docs(reference): document backends, 20 workloads, and CLI JSON schemas` |
 | `chore(<scope>): ...` | `chore(license): add SPDX headers across source tree and create CHANGELOG.md` |

@@ -1,6 +1,6 @@
 # CrossGPU
 
-Cross-platform GPU discovery, hardware telemetry, and stress-testing CLI targeting **Linux** (`x86_64`, `aarch64`) and **macOS** (`arm64`, `x86_64`), built exclusively with the **Python 3.10+ standard library** and **zero external runtime dependencies**.
+Cross-platform GPU discovery and stress-testing CLI targeting **Linux** (`x86_64`, `aarch64`) and **macOS** (`arm64`, `x86_64`), built exclusively with the **Python 3.10+ standard library** and **zero external runtime dependencies**.
 
 ![Terminal Demo](./assets/demo.gif)
 
@@ -9,7 +9,7 @@ Cross-platform GPU discovery, hardware telemetry, and stress-testing CLI targeti
 - **5 native `ctypes` backends:** CUDA (`libcuda.so.1`), HIP (`libamdhip64.so.6`), oneAPI Level Zero (`libze_loader.so.1`), Apple Metal (`libobjc.A.dylib` + `Metal.framework`), and OpenCL (`libOpenCL.so.1` / `OpenCL.framework`).
 - **Priority & physical deduplication:** Native backends (`100`) take precedence over OpenCL (`50`) using normalized PCIe BDF, hardware UUID / macOS `registryID`, and fallback fingerprints.
 - **90 native kernels & 20 verified workloads:** Raw kernels under `src/kernels/` loaded via `importlib.resources` (zero fake emulation), host-side golden verification, fixed SI unit rates (`GOP/s`, `GFLOP/s`, `GB/s`), and safe VRAM sizing.
-- **Clean 1 Hz telemetry & stream hygiene:** NVML, Linux DRM/hwmon `sysfs`, and unprivileged macOS `ioreg` with sensor sanitization (omitting unusable fields and empty ticks), strict `stdout`/`stderr` separation, `-v`/`--verbose`, `difflib` typo hints, and `ms`/`s`/`m`/`h` durations.
+- **Clean CLI & stream hygiene:** Interactive ASCII banner (`--no-banner`), colorful status badges (`PASSED`, `FAILED`, `UNSUPPORTED`), single-document `--json` output across `list`, `info`, and `run`, strict `stdout`/`stderr` separation, `-v`/`--verbose`, `difflib` typo hints, and `ms`/`s`/`m`/`h` durations.
 
 ## Installation
 
@@ -48,11 +48,10 @@ Exit codes are severity-ordered and aggregated across GPUs and workloads via `ma
 Full documentation lives under [`docs/`](docs/README.md):
 
 - [Documentation Index](docs/README.md) — overview and quick navigation
-- [CLI Reference](docs/cli.md) — commands, flags, `ms`/`s`/`m`/`h` timing, JSON/NDJSON schemas, exit codes, and recipes
+- [CLI Reference](docs/cli.md) — commands, flags, `ms`/`s`/`m`/`h` timing, JSON schemas, exit codes, and recipes
 - [Architecture](docs/architecture.md) — system diagram, `ctypes` ABI layer, deduplication, `importlib.resources` kernel loader, caching, and signal cleanup
 - [Backends & Capability Matrix](docs/backends.md) — CUDA, HIP, Level Zero, Metal, and OpenCL runtimes, error mapping, and 5×20 support table
 - [Workloads & Verification](docs/workloads.md) — all 20 workloads, SI unit accounting, verification rules, calibration, and VRAM guardrails
-- [Telemetry](docs/telemetry.md) — 1 Hz sampler, 8 sensor metrics, OS readers, sanitization, and non-root notes
 - [Packaging & Distribution](docs/packaging.md) — offline distro builds, FHS install paths, `sdist` verification, and environment overrides
 - [Contributing](docs/contributing.md) — kernel authoring, `embed_binary verify`/`list`, coding standards, and Conventional Commits
 - [Manual Page (`cross-gpu.1`)](docs/cross-gpu.1) — Unix `man(1)` page

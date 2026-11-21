@@ -35,8 +35,8 @@ class TestHardwareSmoke(unittest.TestCase):
         report = runner.run()
         self.assertEqual(report.exit_code, ExitCode.SUCCESS)
 
-        passed = [r for r in report.results if r.status == "pass"]
-        failed = [r for r in report.results if r.status not in ("pass", "unsupported")]
+        passed = [r for r in report.results if r.status == "passed"]
+        failed = [r for r in report.results if r.status not in ("passed", "unsupported")]
         self.assertEqual(failed, [], f"Unexpected hardware failures: {failed}")
         self.assertGreaterEqual(len(passed), 5)
         for res in passed:

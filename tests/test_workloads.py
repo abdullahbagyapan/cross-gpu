@@ -31,7 +31,6 @@ from src.models import (
     BackendDeviceInfo,
     DeviceCapabilities,
     GPUDevice,
-    TelemetrySample,
 )
 from src.runner import StressRunner
 from src.workloads import (
@@ -731,7 +730,6 @@ class TestAll20ExecutorsEndToEndAndFaultInjection(unittest.TestCase):
             warmup_s=0.0,
             explicit_test_selection=False,
             compile_fn=_dummy_compile_fn,
-            telemetry_reader=lambda d: TelemetrySample(temperature_c=55.0),
         )
         # Keep calibration fast for the nonlinear dp4a mock path while still exercising real calibration.
         with mock.patch(
@@ -744,7 +742,7 @@ class TestAll20ExecutorsEndToEndAndFaultInjection(unittest.TestCase):
         self.assertEqual(report.exit_code, ExitCode.SUCCESS)
         self.assertEqual(len(report.results), 20)
         for res in report.results:
-            self.assertEqual(res.status, "pass", f"{res.workload} failed: {res.message}")
+            self.assertEqual(res.status, "passed", f"{res.workload} failed: {res.message}")
             self.assertEqual(res.exit_code, ExitCode.SUCCESS)
             self.assertGreater(res.rate or 0.0, 0.0, f"{res.workload} had non-positive rate")
             self.assertGreater(res.total or 0.0, 0.0, f"{res.workload} had non-positive total")
@@ -787,10 +785,9 @@ class TestAll20ExecutorsEndToEndAndFaultInjection(unittest.TestCase):
                         tests=[wl_name],
                         duration_s=0.005,
                         compile_fn=_dummy_compile_fn,
-                        telemetry_reader=lambda d: TelemetrySample(),
                     ).run()
                 self.assertEqual(report.exit_code, ExitCode.COMPUTE_ERROR)
-                self.assertEqual(report.results[0].status, "fail")
+                self.assertEqual(report.results[0].status, "failed")
                 self.assertEqual(report.results[0].exit_code, ExitCode.COMPUTE_ERROR)
                 self.assertGreaterEqual(report.results[0].errors, 1)
                 backend.assert_no_leaks(self)
@@ -818,10 +815,9 @@ class TestAll20ExecutorsEndToEndAndFaultInjection(unittest.TestCase):
                 duration_s=0.005,
                 explicit_test_selection=False,
                 compile_fn=_dummy_compile_fn,
-                telemetry_reader=lambda d: TelemetrySample(),
             ).run()
             self.assertEqual(rep_all.exit_code, ExitCode.SUCCESS)
-            self.assertEqual([r.status for r in rep_all.results], ["pass", "unsupported"])
+            self.assertEqual([r.status for r in rep_all.results], ["passed", "unsupported"])
 
             # Explicit --test compute-fp8 when unsupported on all selected devices exits with INIT_ERROR (2).
             rep_explicit = StressRunner(
@@ -831,7 +827,6 @@ class TestAll20ExecutorsEndToEndAndFaultInjection(unittest.TestCase):
                 duration_s=0.005,
                 explicit_test_selection=True,
                 compile_fn=_dummy_compile_fn,
-                telemetry_reader=lambda d: TelemetrySample(),
             ).run()
             self.assertEqual(rep_explicit.exit_code, ExitCode.INIT_ERROR)
             self.assertEqual(rep_explicit.results[0].status, "unsupported")
@@ -844,10 +839,9 @@ class TestAll20ExecutorsEndToEndAndFaultInjection(unittest.TestCase):
                 duration_s=0.005,
                 explicit_test_selection=True,
                 compile_fn=_dummy_compile_fn,
-                telemetry_reader=lambda d: TelemetrySample(),
             ).run()
             self.assertEqual(rep_multi.exit_code, ExitCode.SUCCESS)
-            self.assertEqual([r.status for r in rep_multi.results], ["unsupported", "pass"])
+            self.assertEqual([r.status for r in rep_multi.results], ["unsupported", "passed"])
 
             # Compiler #error "UNSUPPORTED" diagnostic also maps cleanly to status="unsupported".
             def _unsupported_compile(*args: Any, **kwargs: Any) -> Any:
@@ -863,7 +857,6 @@ class TestAll20ExecutorsEndToEndAndFaultInjection(unittest.TestCase):
                 duration_s=0.005,
                 explicit_test_selection=False,
                 compile_fn=_unsupported_compile,
-                telemetry_reader=lambda d: TelemetrySample(),
             ).run()
             self.assertEqual(rep_gate.results[0].status, "unsupported")
             self.assertEqual(rep_gate.exit_code, ExitCode.INIT_ERROR)  # All results unsupported
@@ -889,10 +882,8 @@ class TestAll20ExecutorsEndToEndAndFaultInjection(unittest.TestCase):
                 tests=["compute-fp32"],
                 duration_s=0.06,
                 warmup_s=0.06,
-                telemetry_interval_s=0.01,
                 event_callback=events.append,
                 compile_fn=_dummy_compile_fn,
-                telemetry_reader=lambda d: TelemetrySample(temperature_c=60.0),
             )
             report = runner.run()
 
@@ -904,9 +895,6 @@ class TestAll20ExecutorsEndToEndAndFaultInjection(unittest.TestCase):
         ops_per_launch = num_elements * 2 * 256 / 1e9
         self.assertGreaterEqual(total_launches, 3)
         self.assertLess(res.total or 0.0, total_launches * ops_per_launch)
-        phases = {e["phase"] for e in events if e["type"] == "telemetry"}
-        self.assertIn("warmup", phases)
-        self.assertIn("run", phases)
         backend.assert_no_leaks(self)
 
         # SIGINT / request_stop() mid-run exits promptly and frees all buffers/modules cleanly.
@@ -920,7 +908,6 @@ class TestAll20ExecutorsEndToEndAndFaultInjection(unittest.TestCase):
                 tests=["compute-int32", "compute-fp32"],
                 duration_s=10.0,
                 compile_fn=_dummy_compile_fn,
-                telemetry_reader=lambda d: TelemetrySample(),
             )
             stopper = threading.Timer(0.06, runner2.request_stop)
             stopper.start()
@@ -994,10 +981,9 @@ class TestAll20ExecutorsEndToEndAndFaultInjection(unittest.TestCase):
                         tests=[wl],
                         duration_s=0.005,
                         compile_fn=_dummy_compile_fn,
-                        telemetry_reader=lambda d: TelemetrySample(),
                     ).run()
                 self.assertEqual(rep.exit_code, ExitCode.SUCCESS, rep.results[0].message)
-                self.assertEqual(rep.results[0].status, "pass")
+                self.assertEqual(rep.results[0].status, "passed")
                 backend.assert_no_leaks(self)
 
 

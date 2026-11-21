@@ -71,8 +71,8 @@ For hardware matrix / tensor workloads, each tile multiply-accumulate counts **`
    - For standard runs (`--duration >= 1s`), compute, tensor, and bandwidth executors run a short timing probe (stepping up if `< 5 ms`) and scale `iterations` / transfers per step to target **`~100 ms`** per dispatch (clamped inside the **`50 ms–200 ms`** watchdog-safe window).
    - For sub-second runs (`--duration < 1s`, e.g., `250ms` or `500ms`), `calibrate_iterations` automatically caps the target below the requested duration (`20%` of `duration_s`, floored at `5 ms`) to prevent excessive timing overshoot.
 2. **Excluded Warmup Phase (`--warmup > 0`):**
-   - Executes real GPU steps with telemetry tagged `phase="warmup"`; operations and elapsed time during warmup are completely excluded from reported throughput and totals.
+   - Executes real GPU steps before timing starts; operations and elapsed time during warmup are completely excluded from reported throughput and totals.
    - Synchronizes the GPU and invokes `executor.reset_run_state(exec_ctx)` before starting the timed clock.
 3. **Timed Measurement & Periodic Checkpoints (`--duration`):**
-   - Telemetry is tagged `phase="run"`. Every `5.0 s` (`DEFAULT_VERIFY_INTERVAL_S`) and at the end of the timed phase, `executor.verify()` validates results; checkpoint verification overhead is subtracted from timed `elapsed_s` so reported throughput reflects pure GPU execution.
+   - Every `5.0 s` (`DEFAULT_VERIFY_INTERVAL_S`) and at the end of the timed phase, `executor.verify()` validates results; checkpoint verification overhead is subtracted from timed `elapsed_s` so reported throughput reflects pure GPU execution.
    - Any numerical/bitwise mismatch, `NaN`/`Inf`, or nonzero GPU `error_count` immediately stops the workload and reports `ExitCode.COMPUTE_ERROR (3)`. Fatal driver/device-lost/timeout errors report `ExitCode.HARDWARE_ERROR (4)`.

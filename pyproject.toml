@@ -13,7 +13,7 @@ dependencies = []
 authors = [
   { name = "CrossGPU Contributors" },
 ]
-keywords = ["gpu", "stress-test", "cuda", "hip", "level-zero", "metal", "opencl", "telemetry"]
+keywords = ["gpu", "stress-test", "cuda", "hip", "level-zero", "metal", "opencl"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Console",
@@ -35,7 +35,7 @@ classifiers = [
 cross-gpu = "cross_gpu.cli:main"
 
 [tool.setuptools]
-packages = ["cross_gpu", "cross_gpu.backends", "cross_gpu.telemetry", "cross_gpu.workloads"]
+packages = ["cross_gpu", "cross_gpu.backends", "cross_gpu.workloads"]
 package-dir = {"cross_gpu" = "src"}
 include-package-data = true
 

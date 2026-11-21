@@ -31,7 +31,7 @@ cross-gpu \- cross-platform GPU stress-testing CLI
 .B cross-gpu \-\-version
 .SH DESCRIPTION
 .B CrossGPU
-is a cross-platform GPU discovery, hardware telemetry, and stress-testing
+is a cross-platform GPU discovery and stress-testing
 command-line utility targeting Linux and macOS. It is implemented exclusively
 with the Python 3.10+ standard library (zero external Python dependencies) and
 loads native GPU runtimes dynamically via
@@ -45,7 +45,7 @@ hardware fingerprints. Native backends (\fBcuda\fR, \fBhip\fR, \fBlevelzero\fR,
 (priority 50).
 .PP
 Output stream separation is strict: \fBstdout\fR carries only formatted
-command output (text tables/telemetry, JSON/NDJSON, help, or version), while
+command output (text tables, JSON documents, help, or version), while
 \fBstderr\fR carries all errors, discovery diagnostics, compiler logs, and
 \fB\-\-verbose\fR traces.
 .SH COMMANDS
@@ -58,8 +58,7 @@ Display detailed hardware properties, capability flags, and per-backend
 bindings for each detected GPU.
 .TP
 .B run
-Execute GPU stress workloads with optional warmup, golden verification, and
-1 Hz hardware telemetry.
+Execute GPU stress workloads with optional warmup and golden verification.
 .SH OPTIONS
 .TP
 .BI \-\-device " all|N"
@@ -86,15 +85,17 @@ Select \fBauto\fR (highest-priority backend per device, default) or a specific
 backend plugin name (\fBcuda\fR, \fBhip\fR, \fBlevelzero\fR, \fBmetal\fR,
 \fBopencl\fR).
 .TP
+.B \-\-no\-banner
+Suppress the interactive ASCII banner in text mode.
+.TP
 .BI \-\-format " text|json"
-Output format (\fBtext\fR default, or \fBjson\fR). In \fBrun\fR mode,
-\fBjson\fR emits streaming newline-delimited JSON (NDJSON). Unusable or
-unavailable telemetry sensors are omitted from both \fBtext\fR lines and
-NDJSON \fBmetrics\fR objects, and ticks with zero usable sensors are suppressed.
+Output format (\fBtext\fR default, or \fBjson\fR). In \fBjson\fR mode,
+\fBlist\fR, \fBinfo\fR, and \fBrun\fR each emit a single strict JSON document
+on \fBstdout\fR.
 .TP
 .B \-\-json
 Convenience shortcut for \fB\-\-format json\fR. Cannot be combined with
-\fB\-\-format text\fR. Output on \fBstdout\fR is strictly valid JSON/NDJSON
+\fB\-\-format text\fR. Output on \fBstdout\fR is strictly valid JSON
 even when \fB\-\-verbose\fR is enabled.
 .TP
 .BR \-v ", " \-\-verbose
@@ -169,8 +170,7 @@ platform (ignored when \fBCROSS_GPU_NO_CACHE\fR is truthy).
 .B LD_LIBRARY_PATH
 Standard Linux dynamic linker search path honored when resolving native GPU
 runtime SONAMEs (\fIlibcuda.so.1\fR, \fIlibnvrtc.so.12\fR,
-\fIlibamdhip64.so.6\fR, \fIlibze_loader.so.1\fR, \fIlibOpenCL.so.1\fR,
-\fIlibnvidia-ml.so.1\fR).
+\fIlibamdhip64.so.6\fR, \fIlibze_loader.so.1\fR, \fIlibOpenCL.so.1\fR).
 .TP
 .B DYLD_LIBRARY_PATH
 Standard macOS dynamic linker search path.
@@ -183,9 +183,6 @@ Default runtime binary cache on Linux (fallback \fI~/.cache/cross-gpu\fR).
 Default runtime binary cache on macOS (unless \fBXDG_CACHE_HOME\fR is set).
 If the cache directory is read-only or unavailable, caching degrades cleanly
 to in-memory only.
-.TP
-.I /sys/class/drm/card*/device/
-Linux DRM and \fIhwmon\fR sysfs hierarchy queried for AMD and Intel telemetry.
 .TP
 .I /usr/share/bash-completion/completions/cross-gpu
 Installed Bash completion script (under \fI$PREFIX/share/...\fR).
@@ -222,8 +219,7 @@ CROSS_GPU_NO_CACHE=1 cross-gpu run --test compute-fp32 --warmup 250ms --duration
 .SH SEE ALSO
 .BR nvidia-smi (1),
 .BR rocm-smi (1),
-.BR clinfo (1),
-.BR ioreg (8)
+.BR clinfo (1)
 .SH AUTHORS
 CrossGPU Contributors.
 .SH LICENSE

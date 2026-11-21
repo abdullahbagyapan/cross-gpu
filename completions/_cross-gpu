@@ -68,6 +68,7 @@ _cross_gpu() {
                         '--duration[Timed execution duration per workload]:duration:(250ms 500ms 10s 30s 60s 5m 10m 1h)' \
                         '--warmup[Optional warmup duration before each workload]::warmup:(250ms 500ms 5s 10s 30s)' \
                         "--backend[Target backend plugin]:backend:(${backends[*]})" \
+                        '--no-banner[Suppress the interactive ASCII banner]' \
                         '--format[Output format]:format:(text json)' \
                         '--json[Shortcut for --format json]' \
                         '(-v --verbose)'{-v,--verbose}'[Write detailed diagnostics to stderr]'

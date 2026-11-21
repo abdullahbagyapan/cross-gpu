@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""Core domain dataclasses for devices, telemetry, and workload results."""
+"""Core domain dataclasses for devices and workload results."""
 
 from __future__ import annotations
 
@@ -167,37 +167,6 @@ class GPUDevice:
 
 
 @dataclass
-class TelemetrySample:
-    """1 Hz hardware telemetry sample with nullable unavailable sensors."""
-
-    temperature_c: float | None = None
-    power_w: float | None = None
-    gpu_util_pct: float | None = None
-    mem_util_pct: float | None = None
-    core_clock_mhz: int | None = None
-    mem_clock_mhz: int | None = None
-    fan_speed_pct: float | None = None
-    fan_speed_rpm: int | None = None
-
-    def to_dict(self) -> dict[str, float | int | None]:
-        """Return all 8 telemetry fields in canonical order."""
-        return {
-            "temperature_c": self.temperature_c,
-            "power_w": self.power_w,
-            "gpu_util_pct": self.gpu_util_pct,
-            "mem_util_pct": self.mem_util_pct,
-            "core_clock_mhz": self.core_clock_mhz,
-            "mem_clock_mhz": self.mem_clock_mhz,
-            "fan_speed_pct": self.fan_speed_pct,
-            "fan_speed_rpm": self.fan_speed_rpm,
-        }
-
-    def to_usable_dict(self) -> dict[str, float | int]:
-        """Return only non-None telemetry fields in canonical order."""
-        return {key: val for key, val in self.to_dict().items() if val is not None}
-
-
-@dataclass
 class StepMetrics:
     """Raw accounting returned by a single workload execution step."""
 
@@ -236,7 +205,7 @@ class WorkloadResult:
     exit_code: ExitCode = ExitCode.SUCCESS
 
     def to_dict(self) -> dict[str, Any]:
-        """Return NDJSON-serializable workload result payload."""
+        """Return JSON-serializable workload result payload."""
         payload: dict[str, Any] = {
             "device": self.device,
             "device_name": self.device_name,

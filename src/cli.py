@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""CLI argument parser, duration parser, text/JSON/NDJSON formatters, and dispatcher."""
+"""CLI argument parser, duration parser, text/JSON formatters, and dispatcher."""
 
 from __future__ import annotations
 
@@ -20,11 +20,11 @@ from .backends.registry import (
     enumerate_all_backend_devices,
     enumerate_all_backend_devices_with_diagnostics,
 )
+from .banner import maybe_print_banner, supports_color
 from .dedup import deduplicate_devices
 from .exit_codes import ExitCode, UsageError
 from .models import GPUDevice, WorkloadResult
 from .runner import StressRunner
-from .telemetry import sanitize_metrics_dict
 from .workloads import WORKLOAD_REGISTRY, list_workload_names
 
 _DURATION_PATTERN = re.compile(
@@ -37,6 +37,26 @@ _DURATION_MULTIPLIERS: dict[str, float] = {
     "m": 60.0,
     "h": 3600.0,
 }
+
+_STATUS_LABELS: dict[str, str] = {
+    "passed": "PASSED",
+    "failed": "FAILED",
+    "unsupported": "UNSUPPORTED",
+    "init_error": "INIT_ERROR",
+    "hardware_error": "HARDWARE_ERROR",
+    "not_implemented": "INIT_ERROR",
+    "stopped": "STOPPED",
+}
+
+_STATUS_COLORS: dict[str, str] = {
+    "PASSED": "\033[32;1m",
+    "FAILED": "\033[31;1m",
+    "UNSUPPORTED": "\033[33m",
+    "INIT_ERROR": "\033[31m",
+    "HARDWARE_ERROR": "\033[31;1m",
+    "STOPPED": "\033[36m",
+}
+
 _SUBCOMMANDS: tuple[str, ...] = ("list", "info", "run")
 _INVALID_COMMAND_RE = re.compile(
     r"(?:argument\s+command:\s*)?invalid choice:\s*'([^']+)'",
@@ -284,7 +304,7 @@ def build_parser(
         default=argparse.SUPPRESS,
         help="Write detailed probe, deduplication, and compiler diagnostics to stderr",
     )
-    subparsers = parser.add_subparsers(dest="command", required=True)
+    subparsers = parser.add_subparsers(dest="command", metavar="COMMAND")
 
     for cmd_name, help_text, cmd_epilog in (
         ("list", "List detected GPU devices", _LIST_EXAMPLES_EPILOG),
@@ -362,6 +382,12 @@ def build_parser(
         "--json",
         action="store_true",
         help="Convenience shortcut for --format json",
+    )
+    run_p.add_argument(
+        "--no-banner",
+        action="store_true",
+        default=False,
+        help="Suppress the interactive ASCII banner",
     )
     run_p.add_argument(
         "-v",
@@ -486,57 +512,16 @@ def format_progress_prefix(
     return f"[{safe_idx:0{width}d}/{safe_total:0{width}d} {workload} | {span}]"
 
 
-def format_telemetry_line(event: dict[str, Any]) -> str:
-    """Format a 1 Hz telemetry event using only usable sensors; returns '' if none usable."""
-    m = sanitize_metrics_dict(event.get("metrics"))
-    if not m:
-        return ""
-
-    parts: list[str] = []
-    if "temperature_c" in m:
-        parts.append(f"{float(m['temperature_c']):.1f}°C")
-    if "power_w" in m:
-        parts.append(f"{float(m['power_w']):.1f}W")
-    if "gpu_util_pct" in m:
-        parts.append(f"GPU {float(m['gpu_util_pct']):.0f}%")
-    if "mem_util_pct" in m:
-        parts.append(f"Mem {float(m['mem_util_pct']):.0f}%")
-    if "core_clock_mhz" in m:
-        parts.append(f"Core {int(m['core_clock_mhz'])}MHz")
-    if "mem_clock_mhz" in m:
-        parts.append(f"MemClk {int(m['mem_clock_mhz'])}MHz")
-
-    fan_pct = m.get("fan_speed_pct")
-    fan_rpm = m.get("fan_speed_rpm")
-    if fan_pct is not None and fan_rpm is not None:
-        parts.append(f"Fan {float(fan_pct):.0f}%/{int(fan_rpm)}RPM")
-    elif fan_pct is not None:
-        parts.append(f"Fan {float(fan_pct):.0f}%")
-    elif fan_rpm is not None:
-        parts.append(f"Fan {int(fan_rpm)}RPM")
-
-    metrics_str = " | ".join(parts)
-
-    wl_idx = event.get("workload_index")
-    wl_total = event.get("workload_total")
-    if wl_idx is not None and wl_total is not None:
-        prefix = format_progress_prefix(
-            str(event.get("workload", "")),
-            workload_index=int(wl_idx),
-            workload_total=int(wl_total),
-            phase=str(event.get("phase", "run")),
-            phase_elapsed_s=float(event.get("phase_elapsed_s", event.get("elapsed_s", 0.0))),
-            phase_duration_s=float(event.get("phase_duration_s", 0.0)),
-        )
-        return f"{prefix} dev={event.get('device')} | {metrics_str}"
-
-    return (
-        f"[{event.get('elapsed_s', 0.0):6.1f}s] dev={event.get('device')} "
-        f"phase={event.get('phase')} workload={event.get('workload')} | {metrics_str}"
-    )
+def format_status_badge(status: str, use_color: bool = False) -> str:
+    """Format status with optional ANSI colors matching CrossCPU styling."""
+    label = _STATUS_LABELS.get(status.lower(), status.upper())
+    if not use_color:
+        return label
+    prefix = _STATUS_COLORS.get(label, "")
+    return f"{prefix}{label}\033[0m" if prefix else label
 
 
-def format_workload_status_line(event: dict[str, Any]) -> str:
+def format_workload_status_line(event: dict[str, Any], *, use_color: bool = False) -> str:
     """Format a compact progress-prefixed workload completion status line for text mode."""
     wl_idx = int(event.get("workload_index", 1))
     wl_total = int(event.get("workload_total", 1))
@@ -551,18 +536,89 @@ def format_workload_status_line(event: dict[str, Any]) -> str:
         phase_duration_s=target_dur,
     )
     status = str(event.get("status", ""))
+    badge = format_status_badge(status, use_color=use_color)
     dev = event.get("device")
-    if status == "pass":
+    if status in ("pass", "passed"):
         rate = event.get("rate")
         rate_unit = event.get("rate_unit", "")
         rate_part = f" rate={rate:.2f} {rate_unit}" if rate is not None else ""
-        return f"{prefix} dev={dev} status=pass{rate_part}"
+        return f"{prefix} dev={dev} status={badge}{rate_part}"
     detail = str(event.get("reason") or event.get("message") or "").strip()
     suffix = f" ({detail})" if detail else ""
-    return f"{prefix} dev={dev} status={status}{suffix}"
+    return f"{prefix} dev={dev} status={badge}{suffix}"
 
 
-def format_run_summary_text(results: Sequence[WorkloadResult], exit_code: ExitCode) -> str:
+def format_workload_row_text(event: Mapping[str, Any], *, use_color: bool = False) -> str:
+    """Format a completed workload row for the live CrossGPU text table."""
+    name = str(event.get("workload", ""))
+    dev = str(event.get("device", 0))
+    backend = str(event.get("backend", ""))
+    status = str(event.get("status", ""))
+    raw_badge = format_status_badge(status, use_color=False)
+    badge = format_status_badge(status, use_color=use_color)
+    pad_extra = len(badge) - len(raw_badge)
+
+    rate = event.get("rate")
+    rate_unit = str(event.get("rate_unit", ""))
+    total = event.get("total")
+    total_unit = str(event.get("total_unit", ""))
+    rate_str = f"{float(rate):.2f} {rate_unit}".strip() if rate is not None else "-"
+    total_str = f"{float(total):.2f} {total_unit}".strip() if total is not None else "-"
+
+    dur_s = float(event.get("duration_s", 0.0))
+    time_str = format_duration(dur_s) if 0.0 < dur_s < 1.0 else f"{dur_s:.2f}s"
+    is_pass = status in ("pass", "passed")
+    reason = str(
+        event.get("reason") or (event.get("message") if not is_pass else "") or ""
+    ).strip()
+    if status == "unsupported" and not reason:
+        reason = f"unsupported on {backend}"
+    if is_pass and not reason:
+        detail = time_str
+    elif reason and dur_s > 0.0:
+        detail = f"{time_str} ({reason})"
+    else:
+        detail = reason or time_str
+
+    return (
+        f"{name:<22} {dev:<4} {backend:<10} {badge:<{14 + pad_extra}} "
+        f"{rate_str:>16} {total_str:>16}  {detail}"
+    )
+
+
+def format_run_footer_text(
+    results: Sequence[WorkloadResult],
+    exit_code: ExitCode,
+) -> str:
+    """Format the closing summary line matching CrossCPU."""
+    passed = sum(1 for r in results if r.status in ("pass", "passed"))
+    failed = sum(1 for r in results if r.status in ("fail", "failed"))
+    unsupported = sum(1 for r in results if r.status == "unsupported")
+    hardware_error = sum(1 for r in results if r.status == "hardware_error")
+    init_error = sum(1 for r in results if r.status in ("init_error", "not_implemented"))
+
+    summary_parts = [
+        f"{passed} passed",
+        f"{failed} failed",
+        f"{unsupported} unsupported",
+    ]
+    if init_error:
+        summary_parts.append(f"{init_error} init_error")
+    if hardware_error:
+        summary_parts.append(f"{hardware_error} hardware_error")
+
+    return (
+        f"Summary: {', '.join(summary_parts)} | "
+        f"Exit: {exit_code.name} ({int(exit_code)})\n"
+    )
+
+
+def format_run_summary_text(
+    results: Sequence[WorkloadResult],
+    exit_code: ExitCode,
+    *,
+    use_color: bool = False,
+) -> str:
     """Format final workload results as an aligned summary table with tally."""
     if not results:
         return (
@@ -573,7 +629,7 @@ def format_run_summary_text(results: Sequence[WorkloadResult], exit_code: ExitCo
     include_reason = any(
         res.status == "unsupported"
         or bool(res.reason)
-        or res.status in ("fail", "init_error", "hardware_error", "not_implemented")
+        or res.status in ("fail", "failed", "init_error", "hardware_error", "not_implemented")
         for res in results
     )
     headers: tuple[str, ...] = (
@@ -581,31 +637,48 @@ def format_run_summary_text(results: Sequence[WorkloadResult], exit_code: ExitCo
         if include_reason
         else ("DEV", "BACKEND", "WORKLOAD", "STATUS", "RATE", "TOTAL", "ERR", "TIME", "EXIT")
     )
-    rows: list[tuple[str, ...]] = []
+    raw_rows: list[tuple[str, ...]] = []
+    display_rows: list[tuple[str, ...]] = []
     for res in results:
-        rate_str = f"{res.rate:.2f} {res.rate_unit}" if res.rate is not None else "N/A"
-        total_str = f"{res.total:.2f} {res.total_unit}" if res.total is not None else "N/A"
-        base_row = (
+        rate_str = f"{res.rate:.2f} {res.rate_unit}" if res.rate is not None else "-"
+        total_str = f"{res.total:.2f} {res.total_unit}" if res.total is not None else "-"
+        raw_status = format_status_badge(res.status, use_color=False)
+        color_status = format_status_badge(res.status, use_color=use_color)
+        dur_str = format_duration(res.duration_s) if 0.0 < res.duration_s < 1.0 else f"{res.duration_s:.2f}s"
+        raw_base = (
             str(res.device),
             res.backend,
             res.workload,
-            res.status,
+            raw_status,
             rate_str,
             total_str,
             str(res.errors),
-            format_duration(res.duration_s) if 0.0 < res.duration_s < 1.0 else f"{res.duration_s:.2f}s",
+            dur_str,
+            str(int(res.exit_code)),
+        )
+        disp_base = (
+            str(res.device),
+            res.backend,
+            res.workload,
+            color_status,
+            rate_str,
+            total_str,
+            str(res.errors),
+            dur_str,
             str(int(res.exit_code)),
         )
         if include_reason:
-            detail = res.reason or (res.message if res.status != "pass" else "")
+            detail = res.reason or (res.message if res.status not in ("pass", "passed") else "")
             if res.status == "unsupported" and not detail:
                 detail = f"unsupported on {res.backend}"
-            rows.append((*base_row, detail or "-"))
+            raw_rows.append((*raw_base, detail or "-"))
+            display_rows.append((*disp_base, detail or "-"))
         else:
-            rows.append(base_row)
+            raw_rows.append(raw_base)
+            display_rows.append(disp_base)
 
     widths = [
-        max(len(headers[col]), *(len(row[col]) for row in rows))
+        max(len(headers[col]), *(len(row[col]) for row in raw_rows))
         for col in range(len(headers))
     ]
     lines = [
@@ -614,11 +687,15 @@ def format_run_summary_text(results: Sequence[WorkloadResult], exit_code: ExitCo
         "  ".join(headers[col].ljust(widths[col]) for col in range(len(headers))),
         "  ".join("-" * widths[col] for col in range(len(headers))),
     ]
-    for row in rows:
-        lines.append("  ".join(row[col].ljust(widths[col]) for col in range(len(headers))))
+    for raw_row, disp_row in zip(raw_rows, display_rows):
+        cells: list[str] = []
+        for col in range(len(headers)):
+            pad_extra = len(disp_row[col]) - len(raw_row[col])
+            cells.append(disp_row[col].ljust(widths[col] + pad_extra))
+        lines.append("  ".join(cells))
 
-    passed = sum(1 for r in results if r.status == "pass")
-    failed = sum(1 for r in results if r.status == "fail")
+    passed = sum(1 for r in results if r.status in ("pass", "passed"))
+    failed = sum(1 for r in results if r.status in ("fail", "failed"))
     unsupported = sum(1 for r in results if r.status == "unsupported")
     hardware_error = sum(1 for r in results if r.status == "hardware_error")
     init_error = sum(1 for r in results if r.status in ("init_error", "not_implemented"))
@@ -713,7 +790,18 @@ def main(
     err = sys.stderr if stderr is None else stderr
 
     parser = build_parser(out_stream=out, err_stream=err)
-    args = parser.parse_args(list(argv) if argv is not None else None)
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
+    if not raw_argv:
+        parser.print_help(file=out)
+        out.flush()
+        return int(ExitCode.USAGE_ERROR)
+
+    args = parser.parse_args(raw_argv)
+    if not getattr(args, "command", None):
+        parser.print_help(file=out)
+        out.flush()
+        return int(ExitCode.USAGE_ERROR)
+
     verbose = bool(getattr(args, "verbose", False))
     diag_fn = _make_verbose_logger(err, verbose)
 
@@ -772,10 +860,62 @@ def main(
                     args.backend, extra_backends=tuple(plugins.keys())
                 )
 
+            use_color = supports_color(out)
+            is_tty = False
+            try:
+                is_tty = bool(out.isatty())
+            except Exception:
+                is_tty = False
+
+            no_banner = bool(getattr(args, "no_banner", False))
+            if fmt != "json":
+                maybe_print_banner(out, no_banner=no_banner, json_mode=False)
+
+            progress_active = [False]
+            table_header_printed = [False]
+            started_devices: list[dict[str, Any]] = []
+            run_error_msg: list[str] = []
+
+            def _clear_progress() -> None:
+                if progress_active[0] and is_tty and fmt != "json":
+                    out.write("\r\033[K")
+                    out.flush()
+                    progress_active[0] = False
+
+            def _ensure_table_header(
+                devs_list: Sequence[Mapping[str, Any]] | None = None,
+            ) -> None:
+                if table_header_printed[0] or fmt == "json":
+                    return
+                if devs_list:
+                    devs_desc = ", ".join(
+                        f"{d['index']}:{d['name']} ({d['backend']})"
+                        for d in devs_list
+                    )
+                    warmup_part = (
+                        f" | Warmup: {format_duration(warmup_s)}"
+                        if warmup_s > 0.0
+                        else ""
+                    )
+                    out.write(
+                        f"Devices: {devs_desc} | Tests: {len(tests)} | "
+                        f"Backend: {backend_pref} | Duration: {format_duration(duration_s)}"
+                        f"{warmup_part}\n\n"
+                    )
+                out.write(
+                    f"{'WORKLOAD':<22} {'DEV':<4} {'BACKEND':<10} {'STATUS':<14} "
+                    f"{'RATE':>16} {'TOTAL':>16}  DETAIL\n"
+                )
+                out.write("-" * 96 + "\n")
+                out.flush()
+                table_header_printed[0] = True
+
             def emit_event(event: dict[str, Any]) -> None:
                 etype = event.get("type")
                 if etype == "run_summary" and event.get("error"):
-                    err.write(f"cross-gpu: error: {event['error']}\n")
+                    err_str = str(event["error"])
+                    run_error_msg.append(err_str)
+                    err.write(f"cross-gpu: error: {err_str}\n")
                     if not devices:
                         _write_backend_diagnostics(
                             err,
@@ -791,33 +931,28 @@ def main(
                         )
                     err.flush()
 
-                if fmt == "json":
-                    if etype == "telemetry":
-                        clean_metrics = sanitize_metrics_dict(event.get("metrics"))
-                        if not clean_metrics:
-                            return
-                        event = {**event, "metrics": clean_metrics}
-                    out.write(json.dumps(event) + "\n")
-                    out.flush()
-                    return
-                if etype == "telemetry":
-                    line = format_telemetry_line(event)
-                    if line:
-                        out.write(line + "\n")
-                        out.flush()
-                elif etype == "workload_result":
-                    out.write(format_workload_status_line(event) + "\n")
-                    out.flush()
-                elif etype == "run_start":
-                    devs_desc = ", ".join(
-                        f"{d['index']}:{d['name']} ({d['backend']})"
-                        for d in event.get("devices", ())
+                if etype == "run_start":
+                    for d in event.get("devices", ()):
+                        started_devices.append(dict(d))
+                    if fmt != "json":
+                        _ensure_table_header(started_devices)
+                elif etype == "progress" and fmt != "json" and is_tty:
+                    _ensure_table_header()
+                    line = format_progress_prefix(
+                        str(event.get("workload", "")),
+                        workload_index=int(event.get("workload_index", 1)),
+                        workload_total=int(event.get("workload_total", 1)),
+                        phase=str(event.get("phase", "run")),
+                        phase_elapsed_s=float(event.get("phase_elapsed_s", 0.0)),
+                        phase_duration_s=float(event.get("phase_duration_s", 0.0)),
                     )
-                    out.write(
-                        f"Starting cross-gpu run on [{devs_desc}] | "
-                        f"tests={len(tests)} duration={format_duration(duration_s)} "
-                        f"warmup={format_duration(warmup_s)}\n"
-                    )
+                    out.write(f"\r\033[K{line}")
+                    out.flush()
+                    progress_active[0] = True
+                elif etype == "workload_result" and fmt != "json":
+                    _clear_progress()
+                    _ensure_table_header()
+                    out.write(format_workload_row_text(event, use_color=use_color) + "\n")
                     out.flush()
 
             runner_kwargs: dict[str, Any] = {
@@ -838,8 +973,71 @@ def main(
 
             runner = runner_factory(**runner_kwargs)
             report = runner.run()
+            _clear_progress()
+            if fmt == "json":
+                counts = {
+                    "passed": sum(1 for r in report.results if r.status in ("pass", "passed")),
+                    "failed": sum(1 for r in report.results if r.status in ("fail", "failed")),
+                    "unsupported": sum(1 for r in report.results if r.status == "unsupported"),
+                    "init_error": sum(
+                        1 for r in report.results if r.status in ("init_error", "not_implemented")
+                    ),
+                    "hardware_error": sum(
+                        1 for r in report.results if r.status == "hardware_error"
+                    ),
+                }
+                target_devs = started_devices or [
+                    {
+                        "index": d.index,
+                        "name": d.name,
+                        "backend": d.active_backend,
+                    }
+                    for d in devices
+                    if device_index is None or d.index == device_index
+                ]
+                err_text = getattr(report, "error", "") or (run_error_msg[0] if run_error_msg else "")
+                summary_obj: dict[str, Any] = {
+                    **counts,
+                    "total_workloads": len(report.results),
+                    "interrupted": bool(report.interrupted),
+                    "exit_code": int(report.exit_code),
+                    "exit_name": report.exit_code.name,
+                }
+                if err_text:
+                    summary_obj["error"] = err_text
+                payload: dict[str, Any] = {
+                    "command": "run",
+                    "version": __version__,
+                    "exit_code": int(report.exit_code),
+                    "exit_name": report.exit_code.name,
+                    "interrupted": bool(report.interrupted),
+                    "total_workloads": len(report.results),
+                    "devices": target_devs,
+                    "config": {
+                        "device": args.device,
+                        "backend": backend_pref,
+                        "workloads": list(tests),
+                        "duration_s": duration_s,
+                        "warmup_s": warmup_s,
+                    },
+                    "results": [r.to_dict() for r in report.results],
+                    "summary": summary_obj,
+                }
+                if err_text:
+                    payload["error"] = err_text
+                out.write(json.dumps(payload, indent=2) + "\n")
+                out.flush()
+                return int(report.exit_code)
+
             if fmt == "text":
-                out.write(format_run_summary_text(report.results, report.exit_code))
+                if table_header_printed[0]:
+                    out.write("-" * 96 + "\n")
+                out.write(
+                    format_run_footer_text(
+                        report.results,
+                        report.exit_code,
+                    )
+                )
                 out.flush()
             return int(report.exit_code)
 

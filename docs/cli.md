@@ -35,7 +35,7 @@ The CLI can also be invoked directly as a Python module: `python3 -m cross_gpu <
 
 | Flag | Default | Description |
 |---|---|---|
-| `--format text\|json` | `text` | Output format. `list` and `info` emit a single JSON object in `json` mode; `run` emits streaming newline-delimited JSON (NDJSON). |
+| `--format text\|json` | `text` | Output format. `list`, `info`, and `run` each emit a single strict JSON document on `stdout` in `json` mode. |
 | `--json` | off | Convenience alias for `--format json`. Combining `--format text` with `--json` is an error and exits with `ExitCode.USAGE_ERROR (1)`. |
 
 ### `run` Options
@@ -47,6 +47,7 @@ The CLI can also be invoked directly as a Python module: `python3 -m cross_gpu <
 | `--duration TIME` | `60s` | Timed measurement duration per workload. Accepts suffixes `ms`, `s`, `m`, and `h` (case-insensitive, e.g., `250ms`, `500ms`, `1.5s`, `5m`, `1h`). Must be strictly `> 0` (`0ms`, `0s`, negative, or malformed inputs exit `1`). |
 | `--warmup [TIME]` | `0s` | Pre-measurement warmup duration per workload. Three edge-case rules: **omitted** -> `0s` (no warmup); **bare `--warmup`** (no value, including right before another flag like `--warmup --json`) -> `5s`; **explicit value** (`--warmup 10s`, `--warmup=250ms`, `--warmup 0ms`) -> parsed duration (`>= 0`). |
 | `--backend auto\|PLUGIN` | `auto` | `auto` selects each GPU's highest-priority backend (native `100` over `opencl` `50`), or explicitly force `cuda`, `hip`, `levelzero`, `metal`, or `opencl`. |
+| `--no-banner` | off | Suppress the interactive ASCII banner in text mode. |
 
 ### Typo Hints (`difflib`)
 
@@ -62,9 +63,9 @@ cross-gpu: error: unknown test 'fp32'. Did you mean: compute-fp32?; unknown test
 
 ## 3. Stream Hygiene (`stdout` vs. `stderr`)
 
-- **`stdout`** is strictly reserved for formatted command output (`text` tables/telemetry, JSON/NDJSON payloads, `--help`, `--version`).
+- **`stdout`** is strictly reserved for formatted command output (`text` tables, JSON documents, `--help`, `--version`).
 - **`stderr`** receives all errors, per-backend discovery reasons when zero GPUs or a requested backend are unavailable (including Linux `/dev/dri/renderD*` and `/dev/kfd` permission hints), compiler logs, and `-v`/`--verbose` diagnostics.
-- `cross-gpu list --json -v`, `cross-gpu info --json -v`, and `cross-gpu run --json -v` always produce **100% valid JSON/NDJSON on `stdout`**.
+- `cross-gpu list --json -v`, `cross-gpu info --json -v`, and `cross-gpu run --json -v` always produce **100% valid JSON on `stdout`**.
 
 ---
 
@@ -211,32 +212,95 @@ Single JSON document exposing top-level deduplicated hardware properties, capabi
 
 ### `cross-gpu run` (`text`)
 
-Live 1 Hz telemetry rows include zero-padded workload progress (`ms` for `< 1s`, `s` for `>= 1s`) and display **only** usable sensors (never `N/A` placeholders; ticks with zero usable sensors are suppressed). Unsupported workloads always display a concrete reason, followed by an aligned summary table and final tally:
+In interactive TTY text mode, `cross-gpu run` prints the CrossGPU ASCII banner (unless `--no-banner` is set) followed by a live aligned workload table with colorful uppercase status badges (`PASSED`, `FAILED`, `UNSUPPORTED`, `INIT_ERROR`, `HARDWARE_ERROR`) and a closing summary line:
 
 ```text
-Starting cross-gpu run on [0:Apple M2 (metal)] | tests=2 duration=500ms warmup=200ms
-[01/02 compute-fp32 | warmup 15ms/200ms] dev=0 | GPU 48%
-[01/02 compute-fp32 | 500ms/500ms] dev=0 status=pass rate=3135.89 GFLOP/s
-[02/02 compute-fp64 | 0ms/500ms] dev=0 status=unsupported (Metal lacks native fp64)
+Devices: 0:Apple M2 (metal) | Tests: 2 | Backend: auto | Duration: 500ms | Warmup: 200ms
 
-Summary:
-DEV  BACKEND  WORKLOAD      STATUS       RATE             TOTAL          ERR  TIME   EXIT  REASON
----  -------  ------------  -----------  ---------------  -------------  ---  -----  ----  -----------------------
-0    metal    compute-fp32  pass         3135.89 GFLOP/s  1587.39 GFLOP  0    506ms  0     -
-0    metal    compute-fp64  unsupported  N/A              N/A            0    0.00s  2     Metal lacks native fp64
-Tally: passed=1 failed=0 unsupported=1 hardware_error=0 | Exit Code: 2 (INIT_ERROR)
+WORKLOAD               DEV  BACKEND     STATUS                     RATE            TOTAL  DETAIL
+------------------------------------------------------------------------------------------------
+compute-fp32           0    metal       PASSED          3135.89 GFLOP/s    1587.39 GFLOP  506ms
+compute-fp64           0    metal       UNSUPPORTED                   -                -  Metal lacks native fp64
+------------------------------------------------------------------------------------------------
+Summary: 1 passed, 0 failed, 1 unsupported | Exit: INIT_ERROR (2)
 ```
 
-### `cross-gpu run --json` (Streaming NDJSON)
+### `cross-gpu run --json`
 
-One JSON object per line (`run_start`, 1 Hz `telemetry` with usable-only `metrics`, `workload_result`, and final `run_summary`). Every `unsupported` result includes a concrete `"reason"` field:
+Emits a single strict JSON document on `stdout` containing run metadata, target devices, configuration, per-workload results (including a concrete `"reason"` field for every `unsupported` workload), and a summary object:
 
-```ndjson
-{"type": "run_start", "timestamp": 1795052010.683784, "devices": [{"index": 0, "name": "Apple M2", "backend": "metal"}], "workloads": ["compute-fp32", "compute-fp64"], "duration_s": 0.5, "warmup_s": 0.0, "backend": "auto"}
-{"type": "telemetry", "timestamp": 1795052010.706361, "elapsed_s": 0.0, "phase": "run", "device": 0, "workload": "compute-fp32", "workload_index": 1, "workload_total": 2, "phase_elapsed_s": 0.016, "phase_duration_s": 0.5, "metrics": {"gpu_util_pct": 23.0}}
-{"type": "workload_result", "workload_index": 1, "workload_total": 2, "target_duration_s": 0.5, "device": 0, "device_name": "Apple M2", "backend": "metal", "workload": "compute-fp32", "category": "compute-fp", "status": "pass", "duration_s": 0.500152, "rate": 3108.7119, "rate_unit": "GFLOP/s", "total": 1554.8285, "total_unit": "GFLOP", "errors": 0, "message": "", "exit_code": 0}
-{"type": "workload_result", "workload_index": 2, "workload_total": 2, "target_duration_s": 0.5, "device": 0, "device_name": "Apple M2", "backend": "metal", "workload": "compute-fp64", "category": "compute-fp", "status": "unsupported", "duration_s": 0.0, "rate": null, "rate_unit": "GFLOP/s", "total": null, "total_unit": "GFLOP", "errors": 0, "message": "Metal lacks native fp64", "reason": "Metal lacks native fp64", "exit_code": 2}
-{"type": "run_summary", "exit_code": 2, "interrupted": false, "total_workloads": 2, "results": [{"device": 0, "device_name": "Apple M2", "backend": "metal", "workload": "compute-fp32", "category": "compute-fp", "status": "pass", "duration_s": 0.500152, "rate": 3108.7119, "rate_unit": "GFLOP/s", "total": 1554.8285, "total_unit": "GFLOP", "errors": 0, "message": "", "exit_code": 0}, {"device": 0, "device_name": "Apple M2", "backend": "metal", "workload": "compute-fp64", "category": "compute-fp", "status": "unsupported", "duration_s": 0.0, "rate": null, "rate_unit": "GFLOP/s", "total": null, "total_unit": "GFLOP", "errors": 0, "message": "Metal lacks native fp64", "reason": "Metal lacks native fp64", "exit_code": 2}]}
+```json
+{
+  "command": "run",
+  "version": "0.1.0",
+  "exit_code": 2,
+  "exit_name": "INIT_ERROR",
+  "interrupted": false,
+  "total_workloads": 2,
+  "devices": [
+    {
+      "index": 0,
+      "name": "Apple M2",
+      "backend": "metal"
+    }
+  ],
+  "config": {
+    "device": "all",
+    "backend": "auto",
+    "workloads": [
+      "compute-fp32",
+      "compute-fp64"
+    ],
+    "duration_s": 0.5,
+    "warmup_s": 0.0
+  },
+  "results": [
+    {
+      "device": 0,
+      "device_name": "Apple M2",
+      "backend": "metal",
+      "workload": "compute-fp32",
+      "category": "compute-fp",
+      "status": "passed",
+      "duration_s": 0.500152,
+      "rate": 3108.7119,
+      "rate_unit": "GFLOP/s",
+      "total": 1554.8285,
+      "total_unit": "GFLOP",
+      "errors": 0,
+      "message": "",
+      "exit_code": 0
+    },
+    {
+      "device": 0,
+      "device_name": "Apple M2",
+      "backend": "metal",
+      "workload": "compute-fp64",
+      "category": "compute-fp",
+      "status": "unsupported",
+      "duration_s": 0.0,
+      "rate": null,
+      "rate_unit": "GFLOP/s",
+      "total": null,
+      "total_unit": "GFLOP",
+      "errors": 0,
+      "message": "Metal lacks native fp64",
+      "exit_code": 2,
+      "reason": "Metal lacks native fp64"
+    }
+  ],
+  "summary": {
+    "passed": 1,
+    "failed": 0,
+    "unsupported": 1,
+    "init_error": 0,
+    "hardware_error": 0,
+    "total_workloads": 2,
+    "interrupted": false,
+    "exit_code": 2,
+    "exit_name": "INIT_ERROR"
+  }
+}
 ```
 
 ---
@@ -249,7 +313,7 @@ cross-gpu run --device 0 --test compute-fp32,memory-pattern,memory-sweep --warmu
 
 # 2. Sub-second CI smoke check extracting pass rates via jq (diagnostics isolated on stderr)
 CROSS_GPU_NO_CACHE=1 cross-gpu run --test compute-fp32 --warmup 250ms --duration 500ms --json -v \
-  | jq -r 'select(.type == "workload_result") | "\(.device) \(.workload) \(.status) \(.rate) \(.rate_unit)"'
+  | jq -r '.results[] | "\(.device) \(.workload) \(.status) \(.rate) \(.rate_unit)"'
 
 # 3. Force OpenCL instead of auto-selected native backend (CUDA/HIP/Level Zero/Metal)
 cross-gpu run --backend opencl --test all --duration 60s --json
@@ -267,7 +331,7 @@ cross-gpu run --device all --test compute-tensor-fp16 --warmup --duration 30s
 | `XDG_CACHE_HOME` | Stores compiled kernel cache files under `$XDG_CACHE_HOME/cross-gpu` when set to an absolute path (on both Linux and macOS). Defaults to `~/.cache/cross-gpu` on Linux and `~/Library/Caches/cross-gpu` on macOS. |
 | `CROSS_GPU_NO_CACHE` | When set to `1`, `true`, or `yes` (case-insensitive), completely bypasses disk cache reads and writes (in-memory caching only). |
 | `CROSS_GPU_CACHE_DIR` | Explicitly overrides the disk cache directory on any platform (ignored when `CROSS_GPU_NO_CACHE` is truthy). |
-| `LD_LIBRARY_PATH` / `DYLD_LIBRARY_PATH` | Honored by the OS dynamic linker when probing versioned SONAMEs (`libcuda.so.1`, `libnvrtc.so.12`, `libamdhip64.so.6`, `libze_loader.so.1`, `libOpenCL.so.1`, `libnvidia-ml.so.1`). |
+| `LD_LIBRARY_PATH` / `DYLD_LIBRARY_PATH` | Honored by the OS dynamic linker when probing versioned SONAMEs (`libcuda.so.1`, `libnvrtc.so.12`, `libamdhip64.so.6`, `libze_loader.so.1`, `libOpenCL.so.1`). |
 
 Static completions are installed by `make install` (see [packaging.md](packaging.md)):
 

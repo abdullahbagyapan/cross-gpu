@@ -51,3 +51,4 @@ complete -c cross-gpu -n "__fish_seen_subcommand_from run" -l test -xa "$__cross
 complete -c cross-gpu -n "__fish_seen_subcommand_from run" -l duration -xa "$__cross_gpu_durations" -d 'Timed execution duration per workload'
 complete -c cross-gpu -n "__fish_seen_subcommand_from run" -l warmup -xa "$__cross_gpu_warmups" -d 'Warmup duration before each workload'
 complete -c cross-gpu -n "__fish_seen_subcommand_from run" -l backend -xa "$__cross_gpu_backends" -d 'Target backend plugin'
+complete -c cross-gpu -n "__fish_seen_subcommand_from run" -l no-banner -d 'Suppress the interactive ASCII banner'

@@ -56,12 +56,7 @@ from src.exit_codes import (
     BackendInitError,
     KernelCompilationError,
 )
-from src.models import BackendDeviceInfo, TelemetrySample
-from src.telemetry.readers import (
-    NVML_LIB_CANDIDATES,
-    _NvmlClient,
-    read_linux_sysfs,
-)
+from src.models import BackendDeviceInfo
 from src.workloads.common import write_host_buffer
 
 
@@ -81,7 +76,6 @@ class TestAuditRegressions(unittest.TestCase):
             "LEVELZERO_LIB_CANDIDATES": LEVELZERO_LIB_CANDIDATES,
             "NVRTC_LIB_CANDIDATES": NVRTC_LIB_CANDIDATES,
             "HIPRTC_LIB_CANDIDATES": HIPRTC_LIB_CANDIDATES,
-            "NVML_LIB_CANDIDATES": NVML_LIB_CANDIDATES,
         }
         if not sys.platform == "darwin":
             all_linux_lists["OPENCL_LIB_CANDIDATES"] = OPENCL_LIB_CANDIDATES
@@ -439,42 +433,6 @@ class TestAuditRegressions(unittest.TestCase):
         )
         write_host_buffer(hbuf, ro_view)
         self.assertEqual(bytes(dst_arr), b"CrossGPU-RO-Buffer")
-
-    def test_sysfs_permission_error_degradation_and_nvml_lock(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            drm = Path(tmp) / "drm"
-            drm.mkdir()
-            with mock.patch.object(Path, "iterdir", side_effect=PermissionError("denied")):
-                sample = read_linux_sysfs("0000:01:00.0", drm_root=drm)
-            self.assertEqual(sample, TelemetrySample())
-
-        client = _NvmlClient()
-        init_calls = 0
-
-        def _fake_load(*args, **kwargs):
-            nonlocal init_calls
-            init_calls += 1
-            raise OSError("missing libnvidia-ml.so.1")
-
-        with mock.patch("src.telemetry.readers.load_shared_library", side_effect=_fake_load):
-            barrier = threading.Barrier(4)
-            results: list[bool] = []
-            lock = threading.Lock()
-
-            def _worker() -> None:
-                barrier.wait()
-                ok = client._ensure_init()
-                with lock:
-                    results.append(ok)
-
-            threads = [threading.Thread(target=_worker) for _ in range(4)]
-            for t in threads:
-                t.start()
-            for t in threads:
-                t.join()
-
-        self.assertEqual(results, [False, False, False, False])
-        self.assertEqual(init_calls, 1)
 
     def test_format_duration_zero_and_submillisecond(self) -> None:
         self.assertEqual(format_duration(0.0), "0s")

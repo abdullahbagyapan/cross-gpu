@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""Multi-GPU stress-testing orchestrator with warmup/run phases, signals, and telemetry."""
+"""Multi-GPU stress-testing orchestrator with warmup/run phases and signal-safe cleanup."""
 
 from __future__ import annotations
 
@@ -28,10 +28,8 @@ from .models import (
     BackendBinding,
     BackendDeviceInfo,
     GPUDevice,
-    TelemetrySample,
     WorkloadResult,
 )
-from .telemetry import TelemetrySampler, read_telemetry, sanitize_sample
 from .workloads import (
     WORKLOAD_REGISTRY,
     WorkloadEntry,
@@ -52,56 +50,7 @@ class RunReport:
     exit_code: ExitCode
     results: list[WorkloadResult]
     interrupted: bool = False
-
-
-class _DeviceTelemetryState:
-    """Thread-safe container tracking active phase, workload, and progress for 1 Hz tags."""
-
-    def __init__(
-        self,
-        initial_workload: str,
-        workload_total: int = 1,
-        initial_phase: str = "run",
-        phase_duration_s: float = 0.0,
-    ) -> None:
-        self._lock = threading.Lock()
-        self.phase: str = initial_phase
-        self.workload: str = initial_workload
-        self.workload_index: int = 1
-        self.workload_total: int = max(1, workload_total)
-        self.phase_start_mono: float = time.perf_counter()
-        self.phase_duration_s: float = phase_duration_s
-
-    def set(
-        self,
-        phase: str,
-        workload: str,
-        *,
-        workload_index: int | None = None,
-        phase_duration_s: float | None = None,
-        reset_timer: bool = True,
-    ) -> None:
-        with self._lock:
-            self.phase = phase
-            self.workload = workload
-            if workload_index is not None:
-                self.workload_index = workload_index
-            if phase_duration_s is not None:
-                self.phase_duration_s = float(phase_duration_s)
-            if reset_timer:
-                self.phase_start_mono = time.perf_counter()
-
-    def snapshot(self) -> tuple[str, str, int, int, float, float]:
-        with self._lock:
-            phase_elapsed = max(0.0, time.perf_counter() - self.phase_start_mono)
-            return (
-                self.phase,
-                self.workload,
-                self.workload_index,
-                self.workload_total,
-                phase_elapsed,
-                self.phase_duration_s,
-            )
+    error: str = ""
 
 
 DEFAULT_VERIFY_INTERVAL_S = 5.0
@@ -145,7 +94,7 @@ def _callable_accepts_kwarg(fn: Callable[..., Any], kwarg: str) -> bool:
 
 
 class StressRunner:
-    """Coordinates device/backend selection, multi-GPU execution, signals, and telemetry."""
+    """Coordinates device/backend selection, multi-GPU execution, and signal-safe cleanup."""
 
     def __init__(
         self,
@@ -159,11 +108,9 @@ class StressRunner:
         backend_preference: str = "auto",
         explicit_test_selection: bool = True,
         event_callback: EventCallback | None = None,
-        telemetry_interval_s: float = 1.0,
         verify_interval_s: float = DEFAULT_VERIFY_INTERVAL_S,
         registry: dict[str, WorkloadEntry] | None = None,
         compile_fn: CompileFn = compile_kernel_runtime,
-        telemetry_reader: Callable[[GPUDevice | None], TelemetrySample] = read_telemetry,
         diag_fn: DiagCallback | None = None,
         backend_diagnostics: dict[str, str] | None = None,
     ) -> None:
@@ -176,11 +123,9 @@ class StressRunner:
         self.backend_preference = backend_preference
         self.explicit_test_selection = explicit_test_selection
         self.event_callback = event_callback
-        self.telemetry_interval_s = float(telemetry_interval_s)
         self.verify_interval_s = float(verify_interval_s)
         self.registry = WORKLOAD_REGISTRY if registry is None else registry
         self.compile_fn = compile_fn
-        self.telemetry_reader = telemetry_reader
         self.diag_fn = diag_fn
         self.backend_diagnostics = dict(backend_diagnostics or {})
 
@@ -245,48 +190,6 @@ class StressRunner:
         out_lock: threading.Lock,
         target_count: int = 1,
     ) -> None:
-        telemetry_state = _DeviceTelemetryState(
-            self.tests[0] if self.tests else "",
-            workload_total=len(self.tests),
-            initial_phase="warmup" if self.warmup_s > 0 else "run",
-            phase_duration_s=self.warmup_s if self.warmup_s > 0 else self.duration_s,
-        )
-
-        def on_sample(sample: TelemetrySample, elapsed_s: float) -> None:
-            usable_metrics = sanitize_sample(sample).to_usable_dict()
-            if not usable_metrics:
-                return
-            (
-                phase,
-                workload_name,
-                wl_idx,
-                wl_total,
-                phase_elapsed,
-                phase_duration,
-            ) = telemetry_state.snapshot()
-            self._emit(
-                {
-                    "type": "telemetry",
-                    "timestamp": time.time(),
-                    "elapsed_s": round(elapsed_s, 3),
-                    "phase": phase,
-                    "device": device.index,
-                    "workload": workload_name,
-                    "workload_index": wl_idx,
-                    "workload_total": wl_total,
-                    "phase_elapsed_s": round(phase_elapsed, 3),
-                    "phase_duration_s": round(phase_duration, 3),
-                    "metrics": usable_metrics,
-                }
-            )
-
-        sampler = TelemetrySampler(
-            device,
-            on_sample,
-            interval_s=self.telemetry_interval_s,
-            reader_fn=self.telemetry_reader,
-        )
-
         backend_ctx: BackendContext | None = None
         try:
             backend_ctx = plugin.create_context(binding.device_info)
@@ -355,27 +258,18 @@ class StressRunner:
                 )
             return
 
-        sampler.start()
         try:
             total_tests = len(self.tests)
             for wl_idx, test_name in enumerate(self.tests, start=1):
                 if self._stop_event.is_set():
                     break
                 entry = self.registry[test_name]
-                telemetry_state.set(
-                    "warmup" if self.warmup_s > 0 else "run",
-                    test_name,
-                    workload_index=wl_idx,
-                    phase_duration_s=self.warmup_s if self.warmup_s > 0 else self.duration_s,
-                    reset_timer=True,
-                )
                 res = self._execute_single_workload(
                     device=device,
                     binding=binding,
                     plugin=plugin,
                     backend_ctx=backend_ctx,
                     entry=entry,
-                    telemetry_state=telemetry_state,
                     workload_index=wl_idx,
                     target_count=target_count,
                 )
@@ -391,7 +285,6 @@ class StressRunner:
                     }
                 )
         finally:
-            sampler.stop()
             if backend_ctx is not None:
                 try:
                     plugin.destroy_context(backend_ctx)
@@ -412,7 +305,6 @@ class StressRunner:
         plugin: BackendPlugin,
         backend_ctx: BackendContext,
         entry: WorkloadEntry,
-        telemetry_state: _DeviceTelemetryState,
         workload_index: int = 1,
         target_count: int = 1,
     ) -> WorkloadResult:
@@ -491,33 +383,45 @@ class StressRunner:
             exec_ctx.compiled_binary = compiled
 
             executor.prepare(exec_ctx, compiled)
+            total_tests = max(1, len(self.tests))
 
-            # Warmup phase: telemetry tagged "warmup", throughput excluded.
+            # Warmup phase: throughput excluded.
             if self.warmup_s > 0 and not self._stop_event.is_set():
-                telemetry_state.set(
-                    "warmup",
-                    spec.name,
-                    workload_index=workload_index,
-                    phase_duration_s=self.warmup_s,
-                    reset_timer=True,
-                )
                 warmup_start = time.perf_counter()
+                self._emit(
+                    {
+                        "type": "progress",
+                        "device": device.index,
+                        "workload": spec.name,
+                        "workload_index": workload_index,
+                        "workload_total": total_tests,
+                        "phase": "warmup",
+                        "phase_elapsed_s": 0.0,
+                        "phase_duration_s": self.warmup_s,
+                    }
+                )
                 while not self._stop_event.is_set():
                     executor.run_step(exec_ctx)
                     plugin.synchronize(backend_ctx)
-                    if time.perf_counter() - warmup_start >= self.warmup_s:
+                    warmup_elapsed = time.perf_counter() - warmup_start
+                    self._emit(
+                        {
+                            "type": "progress",
+                            "device": device.index,
+                            "workload": spec.name,
+                            "workload_index": workload_index,
+                            "workload_total": total_tests,
+                            "phase": "warmup",
+                            "phase_elapsed_s": min(self.warmup_s, warmup_elapsed),
+                            "phase_duration_s": self.warmup_s,
+                        }
+                    )
+                    if warmup_elapsed >= self.warmup_s:
                         break
                 plugin.synchronize(backend_ctx)
                 executor.reset_run_state(exec_ctx)
 
             # Timed run phase with periodic verification checkpoints and signal responsiveness.
-            telemetry_state.set(
-                "run",
-                spec.name,
-                workload_index=workload_index,
-                phase_duration_s=self.duration_s,
-                reset_timer=True,
-            )
             total_ops = 0.0
             step_errors = 0
             timed_steps = 0
@@ -527,6 +431,18 @@ class StressRunner:
             plugin.synchronize(backend_ctx)
             run_start = time.perf_counter()
             last_checkpoint = run_start
+            self._emit(
+                {
+                    "type": "progress",
+                    "device": device.index,
+                    "workload": spec.name,
+                    "workload_index": workload_index,
+                    "workload_total": total_tests,
+                    "phase": "run",
+                    "phase_elapsed_s": 0.0,
+                    "phase_duration_s": self.duration_s,
+                }
+            )
 
             while not self._stop_event.is_set():
                 step = executor.run_step(exec_ctx)
@@ -538,7 +454,20 @@ class StressRunner:
                     break
 
                 now = time.perf_counter()
-                if (now - run_start - checkpoint_overhead_s) >= self.duration_s:
+                run_elapsed = now - run_start - checkpoint_overhead_s
+                self._emit(
+                    {
+                        "type": "progress",
+                        "device": device.index,
+                        "workload": spec.name,
+                        "workload_index": workload_index,
+                        "workload_total": total_tests,
+                        "phase": "run",
+                        "phase_elapsed_s": min(self.duration_s, max(0.0, run_elapsed)),
+                        "phase_duration_s": self.duration_s,
+                    }
+                )
+                if run_elapsed >= self.duration_s:
                     break
 
                 if self.verify_interval_s > 0 and (now - last_checkpoint) >= self.verify_interval_s:
@@ -561,7 +490,7 @@ class StressRunner:
                     backend=binding.backend,
                     workload=spec.name,
                     category=spec.category,
-                    status="pass",
+                    status="passed",
                     duration_s=0.0,
                     rate=0.0,
                     rate_unit=spec.rate_unit,
@@ -584,7 +513,7 @@ class StressRunner:
                     backend=binding.backend,
                     workload=spec.name,
                     category=spec.category,
-                    status="fail",
+                    status="failed",
                     duration_s=elapsed_s,
                     rate=rate,
                     rate_unit=spec.rate_unit,
@@ -601,7 +530,7 @@ class StressRunner:
                 backend=binding.backend,
                 workload=spec.name,
                 category=spec.category,
-                status="pass",
+                status="passed",
                 duration_s=elapsed_s,
                 rate=rate,
                 rate_unit=spec.rate_unit,
@@ -636,7 +565,7 @@ class StressRunner:
                 backend=binding.backend,
                 workload=spec.name,
                 category=spec.category,
-                status="fail",
+                status="failed",
                 duration_s=0.0,
                 rate=None,
                 rate_unit=spec.rate_unit,
@@ -769,7 +698,7 @@ class StressRunner:
                     "results": [],
                 }
             )
-            return RunReport(exit_code=ExitCode.INIT_ERROR, results=[])
+            return RunReport(exit_code=ExitCode.INIT_ERROR, results=[], error=str(exc))
 
         self._emit(
             {

@@ -12,7 +12,7 @@ _cross_gpu_completions() {
     local subcommands="list info run"
     local global_flags="--help --version -v --verbose"
     local shared_flags="--format --json -v --verbose --help"
-    local run_flags="--device --test --duration --warmup --backend --format --json -v --verbose --help"
+    local run_flags="--device --test --duration --warmup --backend --no-banner --format --json -v --verbose --help"
     local formats="text json"
     local devices="all 0 1 2 3"
     local durations="250ms 500ms 10s 30s 60s 5m 10m 1h"

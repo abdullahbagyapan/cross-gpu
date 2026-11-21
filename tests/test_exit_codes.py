@@ -58,7 +58,7 @@ class TestExitCodes(unittest.TestCase):
         self.assertEqual(error_to_exit_code(BackendInitError("no gpu")), ExitCode.INIT_ERROR)
         self.assertEqual(error_to_exit_code(KernelNotFoundError("missing")), ExitCode.INIT_ERROR)
         self.assertEqual(
-            error_to_exit_code(KernelCompilationError("compile fail", compiler_log="err")),
+            error_to_exit_code(KernelCompilationError("compile failed", compiler_log="err")),
             ExitCode.INIT_ERROR,
         )
         self.assertEqual(error_to_exit_code(UnsupportedKernelError("no fp8")), ExitCode.INIT_ERROR)

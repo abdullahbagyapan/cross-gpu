@@ -71,6 +71,7 @@ jobs:
                   "pyproject.toml",
                   "cross-gpu",
                   "src/__init__.py",
+                  "src/banner.py",
                   "src/cli.py",
                   "src/embed_binary.py",
                   "completions/cross-gpu.bash",

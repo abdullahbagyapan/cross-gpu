@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""Unit tests for CLI argument parsing, --warmup edge cases, JSON/NDJSON, and exit code 4."""
+"""Unit tests for CLI argument parsing, --warmup edge cases, strict JSON output, and exit code 4."""
 
 from __future__ import annotations
 
@@ -26,7 +26,6 @@ from src.cli import (
     format_duration,
     format_progress_prefix,
     format_run_summary_text,
-    format_telemetry_line,
     main,
     parse_duration,
     parse_test_arg,
@@ -245,7 +244,7 @@ class TestCLI(unittest.TestCase):
             self.assertEqual(len(parsed["devices"]), 1)
             self.assertEqual(parsed["devices"][0]["name"], "NVIDIA RTX 4090")
 
-    def test_run_ndjson_and_hardware_error_exit_code_4(self) -> None:
+    def test_run_json_and_hardware_error_exit_code_4(self) -> None:
         dev = _sample_device()
         out, err = io.StringIO(), io.StringIO()
         rc = main(
@@ -255,99 +254,13 @@ class TestCLI(unittest.TestCase):
             discover_fn=lambda: ([dev], {"cuda": _FaultyHardwarePlugin()}),
         )
         self.assertEqual(rc, ExitCode.HARDWARE_ERROR)
-        lines = [json.loads(line) for line in out.getvalue().strip().splitlines()]
-        types = [obj["type"] for obj in lines]
-        self.assertIn("run_start", types)
-        self.assertIn("workload_result", types)
-        self.assertIn("run_summary", types)
-        self.assertEqual(lines[-1]["exit_code"], 4)
-
-    def test_text_telemetry_line_includes_all_8_fields_and_units(self) -> None:
-        line = format_telemetry_line(
-            {
-                "elapsed_s": 1.0,
-                "device": 0,
-                "phase": "run",
-                "workload": "compute-fp32",
-                "metrics": {
-                    "temperature_c": 65.0,
-                    "power_w": 200.0,
-                    "gpu_util_pct": 98.0,
-                    "mem_util_pct": 45.0,
-                    "core_clock_mhz": 2100,
-                    "mem_clock_mhz": 9000,
-                    "fan_speed_pct": 55.0,
-                    "fan_speed_rpm": 1900,
-                },
-            }
-        )
-        for token in ("°C", "W", "%", "MHz", "RPM", "65.0°C", "200.0W", "2100MHz", "1900RPM"):
-            self.assertIn(token, line)
-
-    def test_text_telemetry_line_omits_unusable_fields_and_suppresses_empty(self) -> None:
-        # Partial telemetry: only temp and GPU util usable -> never prints N/A or missing fields
-        partial_line = format_telemetry_line(
-            {
-                "elapsed_s": 5.0,
-                "device": 0,
-                "phase": "run",
-                "workload": "compute-fp32",
-                "workload_index": 1,
-                "workload_total": 4,
-                "phase_elapsed_s": 0.25,
-                "phase_duration_s": 0.5,
-                "metrics": {
-                    "temperature_c": 64.0,
-                    "power_w": None,
-                    "gpu_util_pct": 98.0,
-                    "mem_util_pct": None,
-                    "core_clock_mhz": 0,
-                    "mem_clock_mhz": None,
-                    "fan_speed_pct": None,
-                    "fan_speed_rpm": None,
-                },
-            }
-        )
-        self.assertIn("[01/04 compute-fp32 | 250ms/500ms]", partial_line)
-        self.assertIn("64.0°C | GPU 98%", partial_line)
-        self.assertNotIn("N/A", partial_line)
-        self.assertNotIn("W", partial_line)
-        self.assertNotIn("MHz", partial_line)
-        self.assertNotIn("Fan", partial_line)
-
-        # Zero-RPM fan-stop GPU preserves valid 0RPM without N/A
-        zero_rpm_line = format_telemetry_line(
-            {
-                "elapsed_s": 1.0,
-                "device": 0,
-                "phase": "run",
-                "workload": "compute-fp32",
-                "metrics": {"fan_speed_rpm": 0},
-            }
-        )
-        self.assertIn("Fan 0RPM", zero_rpm_line)
-        self.assertNotIn("N/A", zero_rpm_line)
-
-        # All 8 fields unusable/None -> returns empty string (suppressed)
-        empty_line = format_telemetry_line(
-            {
-                "elapsed_s": 1.0,
-                "device": 0,
-                "phase": "run",
-                "workload": "compute-fp32",
-                "metrics": {
-                    "temperature_c": None,
-                    "power_w": float("nan"),
-                    "gpu_util_pct": 150.0,
-                    "mem_util_pct": -1.0,
-                    "core_clock_mhz": 0,
-                    "mem_clock_mhz": -50,
-                    "fan_speed_pct": None,
-                    "fan_speed_rpm": -1,
-                },
-            }
-        )
-        self.assertEqual(empty_line, "")
+        doc = json.loads(out.getvalue())
+        self.assertEqual(doc["command"], "run")
+        self.assertEqual(doc["exit_code"], 4)
+        self.assertEqual(doc["summary"]["exit_code"], 4)
+        self.assertEqual(doc["summary"]["hardware_error"], 1)
+        self.assertEqual(len(doc["results"]), 1)
+        self.assertEqual(doc["results"][0]["status"], "hardware_error")
 
     def test_subsecond_duration_and_progress_formatting(self) -> None:
         self.assertEqual(format_duration(0.001), "1ms")
@@ -380,7 +293,7 @@ class TestCLI(unittest.TestCase):
             "[01/04 compute-fp32 | 250ms/500ms]",
         )
 
-    def test_cli_json_and_text_suppress_empty_telemetry_ticks(self) -> None:
+    def test_cli_run_single_json_document_and_text_table(self) -> None:
         dev = _sample_device()
 
         class _FakeRunner:
@@ -390,36 +303,11 @@ class TestCLI(unittest.TestCase):
             def run(self):
                 from src.runner import RunReport
 
-                # Empty/unusable tick -> must be suppressed in BOTH text and json
-                self._cb(
-                    {
-                        "type": "telemetry",
-                        "elapsed_s": 0.1,
-                        "device": 0,
-                        "phase": "run",
-                        "workload": "compute-fp32",
-                        "metrics": {"temperature_c": None, "core_clock_mhz": 0},
-                    }
-                )
-                # Partial usable tick -> only non-null keys emitted
-                self._cb(
-                    {
-                        "type": "telemetry",
-                        "elapsed_s": 0.2,
-                        "device": 0,
-                        "phase": "run",
-                        "workload": "compute-fp32",
-                        "workload_index": 1,
-                        "workload_total": 1,
-                        "phase_elapsed_s": 0.2,
-                        "phase_duration_s": 0.5,
-                        "metrics": {"temperature_c": 64.0, "power_w": None, "gpu_util_pct": 98.0},
-                    }
-                )
                 res = WorkloadResult(
                     0, "NVIDIA RTX 4090", "cuda", "compute-fp32", "compute-fp",
-                    "pass", 0.5, 100.0, "GFLOP/s", 50.0, "GFLOP", 0, "", "", ExitCode.SUCCESS,
+                    "passed", 0.5, 100.0, "GFLOP/s", 50.0, "GFLOP", 0, "", "", ExitCode.SUCCESS,
                 )
+                self._cb({"type": "run_start", "devices": [{"index": 0, "name": "NVIDIA RTX 4090", "backend": "cuda"}]})
                 self._cb({"type": "workload_result", "workload_index": 1, "workload_total": 1, "target_duration_s": 0.5, **res.to_dict()})
                 self._cb({"type": "run_summary", "exit_code": 0, "total_workloads": 1, "results": [res.to_dict()]})
                 return RunReport(exit_code=ExitCode.SUCCESS, results=[res])
@@ -433,11 +321,12 @@ class TestCLI(unittest.TestCase):
             runner_factory=_FakeRunner,
         )
         self.assertEqual(rc_json, ExitCode.SUCCESS)
-        objs = [json.loads(line) for line in out_json.getvalue().strip().splitlines()]
-        telem_objs = [o for o in objs if o["type"] == "telemetry"]
-        self.assertEqual(len(telem_objs), 1)
-        self.assertEqual(telem_objs[0]["metrics"], {"temperature_c": 64.0, "gpu_util_pct": 98.0})
-        self.assertNotIn("power_w", telem_objs[0]["metrics"])
+        doc = json.loads(out_json.getvalue())
+        self.assertEqual(doc["command"], "run")
+        self.assertEqual(doc["exit_code"], 0)
+        self.assertEqual(doc["summary"]["passed"], 1)
+        self.assertEqual(len(doc["results"]), 1)
+        self.assertEqual(doc["results"][0]["workload"], "compute-fp32")
 
         out_text, err_text = io.StringIO(), io.StringIO()
         rc_text = main(
@@ -449,7 +338,8 @@ class TestCLI(unittest.TestCase):
         )
         self.assertEqual(rc_text, ExitCode.SUCCESS)
         self.assertNotIn("N/A", out_text.getvalue())
-        self.assertIn("[01/01 compute-fp32 | 200ms/500ms] dev=0 | 64.0°C | GPU 98%", out_text.getvalue())
+        self.assertIn("PASSED", out_text.getvalue())
+        self.assertIn("Summary: 1 passed, 0 failed, 0 unsupported | Exit: SUCCESS (0)", out_text.getvalue())
 
     def test_subprocess_entry_points(self) -> None:
         repo_root = Path(__file__).resolve().parent.parent
@@ -567,7 +457,7 @@ class TestCLI(unittest.TestCase):
                 self.assertIn("[verbose] backend metal: unavailable (macOS only)", err.getvalue())
                 self.assertIn("selected cuda (100) over opencl (50)", err.getvalue())
 
-            # run --json -v with unsupported workload keeps stdout strictly valid NDJSON
+            # run --json -v with unsupported workload keeps stdout strictly valid JSON
             out, err = io.StringIO(), io.StringIO()
             rc = main(
                 ["run", "--device", "0", "--test", "compute-fp8", "--duration", "1s", "--json", "-v"],
@@ -575,8 +465,9 @@ class TestCLI(unittest.TestCase):
                 stderr=err,
             )
             self.assertEqual(rc, ExitCode.HARDWARE_ERROR)
-            lines = [json.loads(line) for line in out.getvalue().strip().splitlines()]
-            self.assertGreaterEqual(len(lines), 3)
+            doc = json.loads(out.getvalue())
+            self.assertEqual(doc["command"], "run")
+            self.assertEqual(doc["exit_code"], int(ExitCode.HARDWARE_ERROR))
             self.assertNotIn("[verbose]", out.getvalue())
             self.assertIn("[verbose] probe cuda: loaded libcuda.so.1", err.getvalue())
 
@@ -601,26 +492,11 @@ class TestCLI(unittest.TestCase):
         )
         self.assertEqual(run_prefix, "[04/20 compute-fp32 | 18s/60s]")
 
-        telem_line = format_telemetry_line(
-            {
-                "elapsed_s": 23.0,
-                "device": 0,
-                "phase": "run",
-                "workload": "compute-fp32",
-                "workload_index": 4,
-                "workload_total": 20,
-                "phase_elapsed_s": 18.0,
-                "phase_duration_s": 60.0,
-                "metrics": {"temperature_c": 70.0},
-            }
-        )
-        self.assertTrue(telem_line.startswith("[04/20 compute-fp32 | 18s/60s] dev=0 |"))
-
         summary = format_run_summary_text(
             [
-                WorkloadResult(0, "GPU", "cuda", "compute-fp32", "compute-fp", "pass", 1.0, 100.0, "GFLOP/s", 100.0, "GFLOP", 0, "", "", ExitCode.SUCCESS),
+                WorkloadResult(0, "GPU", "cuda", "compute-fp32", "compute-fp", "passed", 1.0, 100.0, "GFLOP/s", 100.0, "GFLOP", 0, "", "", ExitCode.SUCCESS),
                 WorkloadResult(0, "GPU", "cuda", "compute-fp8", "compute-fp", "unsupported", 0.0, None, "GFLOP/s", None, "GFLOP", 0, "requires CUDA SM >= 8.9 (detected SM 8.6)", "requires CUDA SM >= 8.9 (detected SM 8.6)", ExitCode.SUCCESS),
-                WorkloadResult(0, "GPU", "cuda", "compute-int32", "compute-int", "fail", 1.0, 50.0, "GOP/s", 50.0, "GOP", 1, "SDC", "", ExitCode.COMPUTE_ERROR),
+                WorkloadResult(0, "GPU", "cuda", "compute-int32", "compute-int", "failed", 1.0, 50.0, "GOP/s", 50.0, "GOP", 1, "SDC", "", ExitCode.COMPUTE_ERROR),
                 WorkloadResult(0, "GPU", "cuda", "memory-sweep", "memory", "hardware_error", 0.0, None, "GB/s", None, "GB", 0, "Xid 79", "", ExitCode.HARDWARE_ERROR),
             ],
             ExitCode.HARDWARE_ERROR,
@@ -676,7 +552,7 @@ class TestCLI(unittest.TestCase):
             "OpenCL device missing cl_khr_fp16 extension",
         )
 
-        # Unsupported reason appears in BOTH text and JSON/NDJSON run outputs
+        # Unsupported reason appears in BOTH text and JSON run outputs
         class _HealthyStubPlugin(_FaultyHardwarePlugin):
             def create_context(self, device: BackendDeviceInfo) -> BackendContext:
                 return BackendContext(backend=self.name, device_info=device, handle=1)
@@ -698,8 +574,9 @@ class TestCLI(unittest.TestCase):
             discover_fn=lambda: ([gpu_sm86], {"cuda": _HealthyStubPlugin()}, {}),
         )
         self.assertEqual(rc_json, ExitCode.INIT_ERROR)
-        events = [json.loads(ln) for ln in out_json.getvalue().strip().splitlines()]
-        wl_event = next(e for e in events if e["type"] == "workload_result")
+        doc_unsupported = json.loads(out_json.getvalue())
+        self.assertEqual(doc_unsupported["exit_code"], int(ExitCode.INIT_ERROR))
+        wl_event = doc_unsupported["results"][0]
         self.assertEqual(wl_event["status"], "unsupported")
         self.assertEqual(wl_event["reason"], "requires CUDA SM >= 8.9 (detected SM 8.6)")
 
@@ -743,8 +620,8 @@ class TestCLI(unittest.TestCase):
         )
         self.assertEqual(rc_unavail, ExitCode.INIT_ERROR)
         self.assertIn("renderD128 permission denied", err_unavail.getvalue())
-        ndjson_lines = [json.loads(ln) for ln in out_unavail.getvalue().strip().splitlines()]
-        self.assertEqual(ndjson_lines[-1]["exit_code"], int(ExitCode.INIT_ERROR))
+        doc_unavail = json.loads(out_unavail.getvalue())
+        self.assertEqual(doc_unavail["exit_code"], int(ExitCode.INIT_ERROR))
 
         # Linux render node permission hint helper
         with tempfile.TemporaryDirectory() as tmp:
@@ -778,6 +655,7 @@ class TestCLI(unittest.TestCase):
             "duration",
             "warmup",
             "backend",
+            "no-banner",
         )
 
         zsh_lines = (repo_root / "completions" / "_cross-gpu").read_text(encoding="utf-8").splitlines()
@@ -798,6 +676,66 @@ class TestCLI(unittest.TestCase):
                 self.assertIn(flag, content, f"Missing flag {flag!r} in {comp_path.name}")
             for ms_tok in ("250ms", "500ms"):
                 self.assertIn(ms_tok, content, f"Missing ms duration {ms_tok!r} in {comp_path.name}")
+
+    def test_banner_and_color_guards(self) -> None:
+        from src.banner import (
+            BANNER_LINES,
+            maybe_print_banner,
+            render_banner,
+            should_show_banner,
+            supports_color,
+        )
+
+        class _MockTTY(io.StringIO):
+            def isatty(self) -> bool:
+                return True
+
+        tty_stream = _MockTTY()
+        non_tty_stream = io.StringIO()
+
+        # Banner lines < 80 cols
+        for line in BANNER_LINES:
+            self.assertLess(len(line), 80)
+
+        # supports_color logic
+        self.assertFalse(supports_color(non_tty_stream))
+        self.assertTrue(supports_color(tty_stream, env={"TERM": "xterm-256color"}))
+        self.assertFalse(supports_color(tty_stream, env={"NO_COLOR": "1", "TERM": "xterm"}))
+        self.assertFalse(supports_color(tty_stream, env={"TERM": "dumb"}))
+
+        # should_show_banner logic
+        self.assertFalse(should_show_banner(non_tty_stream))
+        self.assertTrue(should_show_banner(tty_stream, env={"TERM": "xterm-256color"}))
+        self.assertFalse(should_show_banner(tty_stream, no_banner=True, env={"TERM": "xterm"}))
+        self.assertFalse(should_show_banner(tty_stream, json_mode=True, env={"TERM": "xterm"}))
+        self.assertFalse(should_show_banner(tty_stream, env={"TERM": "dumb"}))
+
+        # render_banner content
+        plain_banner = render_banner(use_color=False)
+        self.assertIn("CrossGPU", plain_banner)
+        self.assertNotIn("\033[", plain_banner)
+
+        color_banner = render_banner(use_color=True)
+        self.assertIn("CrossGPU", color_banner)
+        self.assertIn("\033[36;1m", color_banner)
+
+        # maybe_print_banner
+        sink = _MockTTY()
+        self.assertTrue(maybe_print_banner(sink, env={"TERM": "xterm"}))
+        self.assertIn("CrossGPU", sink.getvalue())
+
+        sink_no_banner = _MockTTY()
+        self.assertFalse(maybe_print_banner(sink_no_banner, no_banner=True, env={"TERM": "xterm"}))
+        self.assertEqual(sink_no_banner.getvalue(), "")
+
+        # status badge colors
+        from src.cli import format_status_badge
+
+        self.assertEqual(format_status_badge("passed", False), "PASSED")
+        self.assertIn("\033[32;1m", format_status_badge("passed", True))
+        self.assertIn("\033[31;1m", format_status_badge("failed", True))
+        self.assertIn("\033[33m", format_status_badge("unsupported", True))
+        self.assertIn("\033[31;1m", format_status_badge("hardware_error", True))
 
 
 if __name__ == "__main__":

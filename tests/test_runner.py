@@ -22,7 +22,6 @@ from src.models import (
     DeviceCapabilities,
     GPUDevice,
     StepMetrics,
-    TelemetrySample,
     VerificationResult,
 )
 from src.runner import StressRunner
@@ -191,7 +190,6 @@ class TestRunner(unittest.TestCase):
             tests=["compute-fp32"],
             duration_s=0.10,
             warmup_s=0.10,
-            telemetry_interval_s=0.01,
             registry=reg,
             event_callback=events.append,
             compile_fn=lambda *a, **kw: CompiledKernelBinary(
@@ -201,21 +199,20 @@ class TestRunner(unittest.TestCase):
                 format="ptx",
                 binary_bytes=b"ptx",
             ),
-            telemetry_reader=lambda d: TelemetrySample(temperature_c=60.0),
         )
         report = runner.run()
         self.assertEqual(report.exit_code, ExitCode.SUCCESS)
         res = report.results[0]
-        self.assertEqual(res.status, "pass")
+        self.assertEqual(res.status, "passed")
         self.assertEqual(res.rate_unit, "GFLOP/s")
         self.assertEqual(res.total_unit, "GFLOP")
         self.assertGreater(res.total or 0.0, 0.0)
         self.assertLess(res.total or 0.0, float(step_counter["total"]))
         self.assertGreater(res.rate or 0.0, 0.0)
-
-        phases = {e["phase"] for e in events if e["type"] == "telemetry"}
-        self.assertIn("warmup", phases)
-        self.assertIn("run", phases)
+        event_types = [e["type"] for e in events]
+        self.assertIn("run_start", event_types)
+        self.assertIn("workload_result", event_types)
+        self.assertIn("run_summary", event_types)
 
     def test_multi_gpu_concurrency_and_severity_aggregation(self) -> None:
         reg = _fresh_registry()
@@ -252,7 +249,7 @@ class TestRunner(unittest.TestCase):
         report = runner.run()
         # GPU 0 -> COMPUTE_ERROR (3), GPU 1 -> HARDWARE_ERROR (4) -> max = 4
         self.assertEqual(report.exit_code, ExitCode.HARDWARE_ERROR)
-        self.assertEqual(report.results[0].status, "fail")
+        self.assertEqual(report.results[0].status, "failed")
         self.assertEqual(report.results[0].exit_code, ExitCode.COMPUTE_ERROR)
         self.assertEqual(report.results[1].status, "hardware_error")
         self.assertEqual(report.results[1].exit_code, ExitCode.HARDWARE_ERROR)
@@ -279,7 +276,7 @@ class TestRunner(unittest.TestCase):
         ).run()
         self.assertEqual(r2.exit_code, ExitCode.INIT_ERROR)
 
-    def test_short_200ms_run_terminates_promptly_and_filters_empty_telemetry(self) -> None:
+    def test_short_200ms_run_terminates_promptly(self) -> None:
         import time as _time
         from src.workloads.common import calibrate_iterations
 
@@ -321,50 +318,20 @@ class TestRunner(unittest.TestCase):
         backend = _StubBackend()
         gpu = _make_gpu(0)
 
-        # Case 1: All 8 telemetry fields unusable -> zero telemetry events emitted, prompt finish (< 0.6s)
-        events_empty: list[dict[str, object]] = []
+        events: list[dict[str, object]] = []
         t0 = _time.monotonic()
         report = StressRunner(
             devices=[gpu],
             plugins={"stub": backend},
             tests=["bandwidth-h2d"],
             duration_s=0.2,
-            telemetry_interval_s=1.0,
             registry=reg,
-            event_callback=events_empty.append,
-            telemetry_reader=lambda _d: TelemetrySample(
-                temperature_c=float("nan"),
-                power_w=-1.0,
-                core_clock_mhz=0,
-            ),
+            event_callback=events.append,
         ).run()
         wall_s = _time.monotonic() - t0
         self.assertEqual(report.exit_code, ExitCode.SUCCESS)
         self.assertAlmostEqual(seen_target_durations[0], 0.2)
         self.assertLess(wall_s, 0.6)
-        self.assertEqual([e for e in events_empty if e["type"] == "telemetry"], [])
-
-        # Case 2: Mixed usable + unusable metrics -> only usable keys appear in telemetry event
-        events_partial: list[dict[str, object]] = []
-        StressRunner(
-            devices=[gpu],
-            plugins={"stub": backend},
-            tests=["bandwidth-h2d"],
-            duration_s=0.1,
-            telemetry_interval_s=0.05,
-            registry=reg,
-            event_callback=events_partial.append,
-            telemetry_reader=lambda _d: TelemetrySample(
-                temperature_c=64.0,
-                power_w=-5.0,
-                gpu_util_pct=98.0,
-                core_clock_mhz=0,
-            ),
-        ).run()
-        telem_events = [e for e in events_partial if e["type"] == "telemetry"]
-        self.assertGreaterEqual(len(telem_events), 1)
-        for ev in telem_events:
-            self.assertEqual(ev["metrics"], {"temperature_c": 64.0, "gpu_util_pct": 98.0})
 
 
 if __name__ == "__main__":
