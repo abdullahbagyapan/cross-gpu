@@ -1,0 +1,101 @@
+name: Bug Report
+description: Report a crash, driver/ABI error, verification failure, or packaging issue in CrossGPU
+title: "[bug]: "
+labels: ["bug", "triage"]
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+      description: Describe the defect and what you expected instead.
+      placeholder: "e.g., cross-gpu run --backend hip --test compute-fp16 fails with INIT_ERROR on ROCm 6.2"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating System
+      options:
+        - Linux (x86_64)
+        - Linux (aarch64)
+        - Linux (other architecture)
+        - macOS (Apple Silicon / arm64)
+        - macOS (Intel / x86_64)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install_method
+    attributes:
+      label: Installation Method
+      options:
+        - PyPI (pip / pipx)
+        - Distro package (Debian / Ubuntu / Fedora / Arch / Nix)
+        - Homebrew
+        - Source checkout / local wheel build
+    validations:
+      required: true
+
+  - type: dropdown
+    id: backend
+    attributes:
+      label: Backend
+      options:
+        - auto
+        - cuda
+        - hip
+        - levelzero
+        - metal
+        - opencl
+    validations:
+      required: true
+
+  - type: dropdown
+    id: exit_code
+    attributes:
+      label: Observed Exit Code / Termination
+      options:
+        - "0 (SUCCESS — unexpected result)"
+        - "1 (USAGE_ERROR)"
+        - "2 (INIT_ERROR)"
+        - "3 (COMPUTE_ERROR)"
+        - "4 (HARDWARE_ERROR)"
+        - "Crash / Signal (SIGSEGV, SIGABRT, etc.)"
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Version, OS, Kernel & Driver Details
+      description: Paste output of `cross-gpu --version`, `uname -a`, Python version, and GPU driver/runtime version (e.g., `nvidia-smi`, `rocminfo`, `clinfo`, or macOS version).
+      render: shell
+      placeholder: |
+        cross-gpu 1.0.0
+        Python 3.12.7
+        Linux host 6.11.0 #1 SMP x86_64 GNU/Linux
+        NVIDIA Driver 560.35.03 / CUDA 12.6
+    validations:
+      required: true
+
+  - type: textarea
+    id: info_json
+    attributes:
+      label: Output of `cross-gpu info --json`
+      description: Run `cross-gpu info --json` and paste the complete JSON output.
+      render: json
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro_verbose
+    attributes:
+      label: Failing Command & Verbose (`-v`) Output
+      description: Paste the exact command run with `-v` (including both `stdout` and `stderr`, SONAME probing, deduplication decisions, and compiler logs).
+      render: shell
+      placeholder: |
+        $ cross-gpu run --device 0 --test compute-fp32 --duration 500ms -v
+        ...
+    validations:
+      required: true
