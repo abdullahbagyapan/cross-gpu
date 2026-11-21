@@ -277,6 +277,7 @@ class MetalBackend(BackendPlugin):
     def __init__(self) -> None:
         super().__init__()
         self._api: _MetalApi | None = None
+        self._retained_devices: set[int] = set()
 
     def is_available(self) -> bool:
         if sys.platform != "darwin":
@@ -363,7 +364,10 @@ class MetalBackend(BackendPlugin):
                     dev = api.msg_ptr_u64(dev_arr, api.sel_objectAtIndex, idx)
                     if not dev:
                         continue
-                    self._retain_objc(api, dev)
+                    dev_id = int(dev)
+                    if dev_id not in self._retained_devices:
+                        self._retain_objc(api, dev)
+                        self._retained_devices.add(dev_id)
 
                     name = self._from_nsstring(api, api.msg_ptr(dev, api.sel_name)).strip()
                     reg_id = int(api.msg_u64(dev, api.sel_registryID))
@@ -572,6 +576,7 @@ class MetalBackend(BackendPlugin):
             if not cmd_buf:
                 raise BackendInitError("Failed to allocate MTLCommandBuffer for blit")
             self._retain_objc(api, cmd_buf)
+            enc: Any = None
             try:
                 enc = api.msg_ptr(cmd_buf, api.sel_blitCommandEncoder)
                 if not enc:
@@ -586,9 +591,12 @@ class MetalBackend(BackendPlugin):
                     size_bytes,
                 )
                 api.msg_void(enc, api.sel_endEncoding)
+                enc = None
                 api.msg_void(cmd_buf, api.sel_commit)
                 self._wait_cmd_buffer(api, cmd_buf, action)
             finally:
+                if enc is not None:
+                    api.msg_void(enc, api.sel_endEncoding)
                 self._release_objc(api, cmd_buf)
         finally:
             if pool is not None and api.objc_autoreleasePoolPop is not None:
