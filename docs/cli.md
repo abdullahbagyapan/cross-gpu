@@ -232,7 +232,7 @@ Emits a single strict JSON document on `stdout` containing run metadata, target 
 ```json
 {
   "command": "run",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "exit_code": 2,
   "exit_name": "INIT_ERROR",
   "interrupted": false,

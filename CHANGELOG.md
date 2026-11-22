@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-11-22
+
 ### Added
 - Strict `stdout`/`stderr` separation across `list`, `info`, and `run`, ensuring `--json` output on `stdout` never mixes with diagnostics.
 - `-v` / `--verbose` diagnostic logging to `stderr` covering shared library SONAME/framework probes, physical GPU deduplication decisions, `importlib.resources` kernel lookups, cache hits/misses, compile flags, and compiler diagnostics.
@@ -15,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Copy-pasteable `Examples:` epilogs in `--help` output, interactive ASCII banner (`src/banner.py`, `--no-banner`), colorful status badges (`PASSED`, `FAILED`, `UNSUPPORTED`), and final pass/fail/unsupported/hardware-error summary tallies.
 - `CROSS_GPU_NO_CACHE` environment override (bypassing disk cache reads/writes) and explicit `XDG_CACHE_HOME` override support across both Linux and macOS.
 - Static shell completion scripts for Bash (`completions/cross-gpu.bash`), Zsh (`completions/_cross-gpu`), and Fish (`completions/cross-gpu.fish`), along with FHS-compliant `Makefile` install targets (`PREFIX` / `DESTDIR`).
+- Automated multi-platform GitHub release workflow (`.github/workflows/release.yml`) producing sdist, wheels, and SHA-256 manifests on release tags.
+- GitHub issue templates (`.github/ISSUE_TEMPLATE/`) for bug reports and feature requests.
 - `SPDX-License-Identifier: MIT` headers across Python sources, native GPU kernels, shell completions, and `Makefile`.
 - Millisecond (`ms`) timing support for `--duration` and `--warmup` (e.g., `250ms`, `500ms`), sub-second progress formatting (`250ms/500ms`), and short-duration batch calibration capping.
 
@@ -28,6 +32,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed SONAME probing order across `HIP_LIB_CANDIDATES`, `NVRTC_LIB_CANDIDATES`, and `HIPRTC_LIB_CANDIDATES` so versioned `.so.X` runtime libraries are always tried before unversioned `-dev` `.so` symlinks.
 - Corrected Level Zero `ZE_RESULT_ERROR_DEVICE_REQUIRES_RESET` (`0x70000006`) and `ZE_RESULT_ERROR_DEVICE_IN_LOW_POWER_STATE` (`0x70000007`) fault constants and filtered frontend `-D` macros from SPIR-V `zeModuleCreate` build flags.
 - Hardened CUDA/HIP cleanup on poisoned contexts, OpenCL `size_t` work-group queries, Metal `launch_kernel` encoder/command-buffer exception cleanup and worker-thread autorelease pooling, read-only `memoryview` buffer copies, and `format_duration(0.0)` formatting (`0s`).
+- Ensured Metal blit command encoder ends encoding within a `try...finally` block to prevent command buffer hangs on exception, and deduplicated `MTLCopyAllDevices()` retains.
+- Normalized status badge labels and suppressed banner output on initialization errors.
 
 ## [0.1.0] - 2026-11-19
 
