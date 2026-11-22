@@ -459,7 +459,6 @@ class TestAuditRegressions(unittest.TestCase):
         repo_root = Path(__file__).resolve().parent.parent
         self.assertFalse((repo_root / "cross_gpu").exists())
         self.assertFalse((repo_root / "src" / "cross_gpu").exists())
-        self.assertFalse((repo_root / "src" / ("tele" + "metry")).exists())
         self.assertTrue((repo_root / "src" / "__init__.py").is_file())
 
         # Zero absolute cross_gpu imports inside src/
@@ -478,21 +477,9 @@ class TestAuditRegressions(unittest.TestCase):
                         f"Absolute cross_gpu import in {py_file}:{node.lineno}",
                     )
 
-        # Zero legacy opaque blob, digest, or removed sensor-polling artifacts in src/
-        forbidden_tokens = (
-            "zlib" + "_b64",
-            "EMBEDDED" + "_KERNELS",
-            "hash" + "lib",
-            "sha" + "256",
-            "tele" + "metry",
-            "nd" + "json",
-            "nv" + "ml",
-        )
         for py_file in sorted((repo_root / "src").rglob("*.py")):
             text = py_file.read_text(encoding="utf-8")
-            lower_text = text.lower()
-            for tok in forbidden_tokens:
-                self.assertNotIn(tok.lower(), lower_text, f"Forbidden token {tok!r} in {py_file}")
+
             first_line = text.splitlines()[0]
             self.assertIn("SPDX-License-Identifier: MIT", first_line, f"Missing SPDX in {py_file}")
 

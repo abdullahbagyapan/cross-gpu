@@ -39,9 +39,7 @@ _DURATION_MULTIPLIERS: dict[str, float] = {
 }
 
 _STATUS_LABELS: dict[str, str] = {
-    "pass": "PASSED",
     "passed": "PASSED",
-    "fail": "FAILED",
     "failed": "FAILED",
     "unsupported": "UNSUPPORTED",
     "init_error": "INIT_ERROR",
@@ -540,7 +538,7 @@ def format_workload_status_line(event: dict[str, Any], *, use_color: bool = Fals
     status = str(event.get("status", ""))
     badge = format_status_badge(status, use_color=use_color)
     dev = event.get("device")
-    if status in ("pass", "passed"):
+    if status == "passed":
         rate = event.get("rate")
         rate_unit = event.get("rate_unit", "")
         rate_part = f" rate={rate:.2f} {rate_unit}" if rate is not None else ""
@@ -569,7 +567,7 @@ def format_workload_row_text(event: Mapping[str, Any], *, use_color: bool = Fals
 
     dur_s = float(event.get("duration_s", 0.0))
     time_str = format_duration(dur_s) if 0.0 < dur_s < 1.0 else f"{dur_s:.2f}s"
-    is_pass = status in ("pass", "passed")
+    is_pass = status == "passed"
     reason = str(
         event.get("reason") or (event.get("message") if not is_pass else "") or ""
     ).strip()
@@ -593,8 +591,8 @@ def format_run_footer_text(
     exit_code: ExitCode,
 ) -> str:
     """Format the closing summary line for text mode."""
-    passed = sum(1 for r in results if r.status in ("pass", "passed"))
-    failed = sum(1 for r in results if r.status in ("fail", "failed"))
+    passed = sum(1 for r in results if r.status == "passed")
+    failed = sum(1 for r in results if r.status == "failed")
     unsupported = sum(1 for r in results if r.status == "unsupported")
     hardware_error = sum(1 for r in results if r.status == "hardware_error")
     init_error = sum(1 for r in results if r.status in ("init_error", "not_implemented"))
@@ -631,7 +629,7 @@ def format_run_summary_text(
     include_reason = any(
         res.status == "unsupported"
         or bool(res.reason)
-        or res.status in ("fail", "failed", "init_error", "hardware_error", "not_implemented")
+        or res.status in ("failed", "init_error", "hardware_error", "not_implemented")
         for res in results
     )
     headers: tuple[str, ...] = (
@@ -670,7 +668,7 @@ def format_run_summary_text(
             str(int(res.exit_code)),
         )
         if include_reason:
-            detail = res.reason or (res.message if res.status not in ("pass", "passed") else "")
+            detail = res.reason or (res.message if res.status == "passed" else "")
             if res.status == "unsupported" and not detail:
                 detail = f"unsupported on {res.backend}"
             raw_rows.append((*raw_base, detail or "-"))
@@ -696,8 +694,8 @@ def format_run_summary_text(
             cells.append(disp_row[col].ljust(widths[col] + pad_extra))
         lines.append("  ".join(cells))
 
-    passed = sum(1 for r in results if r.status in ("pass", "passed"))
-    failed = sum(1 for r in results if r.status in ("fail", "failed"))
+    passed = sum(1 for r in results if r.status == "passed")
+    failed = sum(1 for r in results if r.status == "failed")
     unsupported = sum(1 for r in results if r.status == "unsupported")
     hardware_error = sum(1 for r in results if r.status == "hardware_error")
     init_error = sum(1 for r in results if r.status in ("init_error", "not_implemented"))
@@ -976,8 +974,8 @@ def main(
             _clear_progress()
             if fmt == "json":
                 counts = {
-                    "passed": sum(1 for r in report.results if r.status in ("pass", "passed")),
-                    "failed": sum(1 for r in report.results if r.status in ("fail", "failed")),
+                    "passed": sum(1 for r in report.results if r.status == "passed"),
+                    "failed": sum(1 for r in report.results if r.status == "failed"),
                     "unsupported": sum(1 for r in report.results if r.status == "unsupported"),
                     "init_error": sum(
                         1 for r in report.results if r.status in ("init_error", "not_implemented")

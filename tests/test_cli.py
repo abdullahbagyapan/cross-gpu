@@ -6,6 +6,7 @@ from __future__ import annotations
 import io
 import json
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -728,24 +729,21 @@ class TestCLI(unittest.TestCase):
         self.assertFalse(maybe_print_banner(sink_no_banner, no_banner=True, env={"TERM": "xterm"}))
         self.assertEqual(sink_no_banner.getvalue(), "")
 
-        # status badge colors (both canonical and legacy aliases)
+        # status badge colors
         from src.cli import format_status_badge
-
         self.assertEqual(format_status_badge("passed", False), "PASSED")
-        self.assertEqual(format_status_badge("pass", False), "PASSED")
         self.assertIn("\033[32;1mPASSED\033[0m", format_status_badge("passed", True))
-        self.assertIn("\033[32;1mPASSED\033[0m", format_status_badge("pass", True))
         self.assertIn("\033[31;1mFAILED\033[0m", format_status_badge("failed", True))
-        self.assertIn("\033[31;1mFAILED\033[0m", format_status_badge("fail", True))
         self.assertIn("\033[33mUNSUPPORTED\033[0m", format_status_badge("unsupported", True))
         self.assertIn("\033[31;1mHARDWARE_ERROR\033[0m", format_status_badge("hardware_error", True))
 
         # No subcommand prints help to stdout and exits 1 (USAGE_ERROR)
+        _ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
         out_empty, err_empty = io.StringIO(), io.StringIO()
         rc_empty = main([], stdout=out_empty, stderr=err_empty)
         self.assertEqual(rc_empty, ExitCode.USAGE_ERROR)
         self.assertEqual(err_empty.getvalue(), "")
-        self.assertIn("usage: cross-gpu", out_empty.getvalue())
+        self.assertIn("usage: cross-gpu", _ANSI_ESCAPE_RE.sub("", out_empty.getvalue()))
 
         # Interactive TTY progress emits ephemeral \r\033[K progress and suppresses banner on 0-GPU INIT_ERROR
         out_no_gpu, err_no_gpu = _MockTTY(), io.StringIO()
