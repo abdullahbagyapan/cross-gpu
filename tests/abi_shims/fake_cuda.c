@@ -15,15 +15,14 @@ typedef void *CUfunction;
 typedef void *CUstream;
 
 #define CUDA_SUCCESS 0
-#define CUDA_ERROR_INVALID_DEVICE 101
 #define CUDA_ERROR_OUT_OF_MEMORY 2
+#define CUDA_ERROR_INVALID_DEVICE 101
 #define CUDA_ERROR_ECC_UNCORRECTABLE 214
 
-static int g_active_allocs = 0;
-static int g_active_contexts = 0;
-static int g_active_modules = 0;
-static int g_current_dev = 0;
-static int g_bitflip_injected = 0;
+static _Atomic int g_active_allocs = 0;
+static _Atomic int g_active_contexts = 0;
+static _Atomic int g_active_modules = 0;
+static _Thread_local int g_current_dev = 0;
 
 static int cuda_count(void) {
     return shim_env_int("FAKE_CUDA_COUNT", 2, 0, SHIM_MAX_GPUS);
@@ -36,9 +35,12 @@ static int cuda_bus(int dev) {
 __attribute__((destructor))
 static void check_cuda_leaks(void) {
     if (!shim_leak_check_enabled()) return;
-    if (g_active_allocs != 0 || g_active_contexts != 0 || g_active_modules != 0) {
+    int allocs = atomic_load(&g_active_allocs);
+    int contexts = atomic_load(&g_active_contexts);
+    int modules = atomic_load(&g_active_modules);
+    if (allocs != 0 || contexts != 0 || modules != 0) {
         fprintf(stderr, "[fake_cuda] LEAK: allocs=%d contexts=%d modules=%d\n",
-                g_active_allocs, g_active_contexts, g_active_modules);
+                allocs, contexts, modules);
         _exit(99);
     }
 }
@@ -77,20 +79,29 @@ CUresult cuDeviceGetUuid_v2(unsigned char uuid[16], CUdevice dev) {
 
 CUresult cuDeviceTotalMem_v2(size_t *bytes, CUdevice dev) {
     (void)dev;
-    if (bytes) *bytes = (size_t)8ULL * 1024ULL * 1024ULL * 1024ULL;
+    if (bytes) *bytes = shim_vram_bytes(256);
+    return CUDA_SUCCESS;
+}
+
+CUresult cuMemGetInfo_v2(size_t *free_bytes, size_t *total_bytes) {
+    size_t total = shim_vram_bytes(256);
+    if (total_bytes) *total_bytes = total;
+    if (free_bytes) *free_bytes = (total * 7) / 8;
     return CUDA_SUCCESS;
 }
 
 CUresult cuDeviceGetAttribute(int *pi, int attrib, CUdevice dev) {
-    (void)dev;
     if (!pi) return CUDA_SUCCESS;
     switch (attrib) {
-        case 75: *pi = 8; break;
-        case 76: *pi = 9; break;
-        case 16: *pi = 64; break;
-        case 1:  *pi = 1024; break;
-        case 10: *pi = 32; break;
-        default: *pi = 1; break;
+        case 1:  *pi = 1024; break;           /* MAX_THREADS_PER_BLOCK */
+        case 10: *pi = 32; break;             /* WARP_SIZE */
+        case 16: *pi = 64; break;             /* MULTIPROCESSOR_COUNT */
+        case 33: *pi = cuda_bus(dev); break;  /* PCI_BUS_ID */
+        case 34: *pi = 0; break;              /* PCI_DEVICE_ID */
+        case 50: *pi = 0; break;              /* PCI_DOMAIN_ID */
+        case 75: *pi = 8; break;              /* COMPUTE_CAPABILITY_MAJOR */
+        case 76: *pi = 9; break;              /* COMPUTE_CAPABILITY_MINOR */
+        default: *pi = 0; break;
     }
     return CUDA_SUCCESS;
 }
@@ -101,7 +112,7 @@ CUresult cuCtxCreate_v2(CUcontext *pctx, unsigned int flags, CUdevice dev) {
     if (!ctx) return CUDA_ERROR_OUT_OF_MEMORY;
     *ctx = dev;
     g_current_dev = dev;
-    g_active_contexts++;
+    atomic_fetch_add(&g_active_contexts, 1);
     if (pctx) *pctx = ctx;
     return CUDA_SUCCESS;
 }
@@ -112,7 +123,10 @@ CUresult cuCtxSetCurrent(CUcontext ctx) {
 }
 
 CUresult cuCtxDestroy_v2(CUcontext ctx) {
-    if (ctx) { free(ctx); g_active_contexts--; }
+    if (ctx) {
+        free(ctx);
+        atomic_fetch_sub(&g_active_contexts, 1);
+    }
     return CUDA_SUCCESS;
 }
 
@@ -126,26 +140,32 @@ CUresult cuCtxSynchronize(void) {
 CUresult cuMemAlloc_v2(CUdeviceptr *dptr, size_t bytesize) {
     void *buf = calloc(1, bytesize ? bytesize : 1);
     if (!buf) return CUDA_ERROR_OUT_OF_MEMORY;
-    g_active_allocs++;
+    atomic_fetch_add(&g_active_allocs, 1);
     if (dptr) *dptr = (CUdeviceptr)(uintptr_t)buf;
     return CUDA_SUCCESS;
 }
 
 CUresult cuMemFree_v2(CUdeviceptr dptr) {
-    if (dptr) { free((void *)(uintptr_t)dptr); g_active_allocs--; }
+    if (dptr) {
+        free((void *)(uintptr_t)dptr);
+        atomic_fetch_sub(&g_active_allocs, 1);
+    }
     return CUDA_SUCCESS;
 }
 
 CUresult cuMemAllocHost_v2(void **pp, size_t bytesize) {
     void *buf = calloc(1, bytesize ? bytesize : 1);
     if (!buf) return CUDA_ERROR_OUT_OF_MEMORY;
-    g_active_allocs++;
+    atomic_fetch_add(&g_active_allocs, 1);
     if (pp) *pp = buf;
     return CUDA_SUCCESS;
 }
 
 CUresult cuMemFreeHost(void *p) {
-    if (p) { free(p); g_active_allocs--; }
+    if (p) {
+        free(p);
+        atomic_fetch_sub(&g_active_allocs, 1);
+    }
     return CUDA_SUCCESS;
 }
 
@@ -163,9 +183,8 @@ CUresult cuMemcpyDtoH_v2(void *dst, CUdeviceptr src, size_t n) {
     }
     if (dst && src && n) {
         memcpy(dst, (const void *)(uintptr_t)src, n);
-        if (shim_fault_is("bitflip") && shim_fault_target_matches("cuda", g_current_dev) && !g_bitflip_injected) {
+        if (shim_fault_is("bitflip") && shim_fault_target_matches("cuda", g_current_dev)) {
             ((unsigned char *)dst)[0] ^= 0x01;
-            g_bitflip_injected = 1;
         }
     }
     return CUDA_SUCCESS;
@@ -183,7 +202,7 @@ CUresult cuModuleLoadData(CUmodule *mod, const void *img) {
     (void)img;
     void *m = malloc(16);
     if (!m) return CUDA_ERROR_OUT_OF_MEMORY;
-    g_active_modules++;
+    atomic_fetch_add(&g_active_modules, 1);
     if (mod) *mod = m;
     return CUDA_SUCCESS;
 }
@@ -194,7 +213,10 @@ CUresult cuModuleLoadDataEx(CUmodule *mod, const void *img, unsigned int n, void
 }
 
 CUresult cuModuleUnload(CUmodule mod) {
-    if (mod) { free(mod); g_active_modules--; }
+    if (mod) {
+        free(mod);
+        atomic_fetch_sub(&g_active_modules, 1);
+    }
     return CUDA_SUCCESS;
 }
 

@@ -15,32 +15,44 @@ typedef void *cl_device_id;
 typedef void *cl_context;
 typedef void *cl_command_queue;
 typedef void *cl_mem;
+typedef void *cl_program;
+typedef void *cl_kernel;
 
 #define CL_SUCCESS 0
 #define CL_DEVICE_NOT_FOUND -1
+#define CL_DEVICE_NOT_AVAILABLE -2
 #define CL_OUT_OF_HOST_MEMORY -6
 #define CL_INVALID_VALUE -30
 #define CL_DEVICE_TYPE_GPU (1ULL << 2)
 
+#define CL_PLATFORM_VERSION 0x0901
 #define CL_PLATFORM_NAME 0x0902
 #define CL_PLATFORM_VENDOR 0x0903
-#define CL_PLATFORM_VERSION 0x0901
 
 #define CL_DEVICE_TYPE 0x1000
 #define CL_DEVICE_VENDOR_ID 0x1001
 #define CL_DEVICE_MAX_COMPUTE_UNITS 0x1002
 #define CL_DEVICE_MAX_WORK_GROUP_SIZE 0x1004
+#define CL_DEVICE_MAX_CLOCK_FREQUENCY 0x100C
+#define CL_DEVICE_MAX_MEM_ALLOC_SIZE 0x1010
 #define CL_DEVICE_GLOBAL_MEM_SIZE 0x101F
 #define CL_DEVICE_NAME 0x102B
 #define CL_DEVICE_VENDOR 0x102C
 #define CL_DRIVER_VERSION 0x102D
 #define CL_DEVICE_VERSION 0x102F
 #define CL_DEVICE_EXTENSIONS 0x1030
+#define CL_DEVICE_DOUBLE_FP_CONFIG 0x1032
+#define CL_DEVICE_HALF_FP_CONFIG 0x1033
+#define CL_DEVICE_HOST_UNIFIED_MEMORY 0x1035
 #define CL_DEVICE_PCI_BUS_ID_NV 0x4008
 #define CL_DEVICE_PCI_SLOT_ID_NV 0x4009
 #define CL_DEVICE_PCI_DOMAIN_ID_NV 0x400A
 #define CL_DEVICE_TOPOLOGY_AMD 0x4037
 #define CL_DEVICE_PCI_BUS_INFO_KHR 0x410F
+
+#define CL_PROGRAM_BINARY_SIZES 0x1165
+#define CL_PROGRAM_BINARIES 0x1166
+#define CL_PROGRAM_BUILD_LOG 0x1183
 
 typedef struct {
     uint32_t pci_domain;
@@ -62,12 +74,17 @@ typedef struct {
     size_t size;
 } fake_cl_mem_t;
 
-static int g_active_mems = 0;
-static int g_active_handles = 0;
-static int g_bitflip_injected = 0;
+typedef struct {
+    int dev_idx;
+} fake_cl_handle_t;
+
+static _Atomic int g_active_mems = 0;
+static _Atomic int g_active_handles = 0;
+static const unsigned char FAKE_CL_BIN[] = { 'C', 'L', 'B', 'I', 'N', 0, 1, 0 };
 
 static int cl_count(void) { return shim_env_int("FAKE_CL_COUNT", 5, 0, SHIM_MAX_GPUS); }
 static int cl_bus(int dev) { return shim_env_int("FAKE_CL_BUS_BASE", 1, 1, 200) + dev; }
+
 static int cl_handle_to_idx(cl_device_id d) {
     uintptr_t v = (uintptr_t)d;
     return v >= 0x3000u ? (int)(v - 0x3000u) : 0;
@@ -76,8 +93,10 @@ static int cl_handle_to_idx(cl_device_id d) {
 __attribute__((destructor))
 static void check_cl_leaks(void) {
     if (!shim_leak_check_enabled()) return;
-    if (g_active_mems != 0 || g_active_handles != 0) {
-        fprintf(stderr, "[fake_opencl] LEAK: mems=%d handles=%d\n", g_active_mems, g_active_handles);
+    int mems = atomic_load(&g_active_mems);
+    int handles = atomic_load(&g_active_handles);
+    if (mems != 0 || handles != 0) {
+        fprintf(stderr, "[fake_opencl] LEAK: mems=%d handles=%d\n", mems, handles);
         _exit(99);
     }
 }
@@ -93,6 +112,21 @@ static cl_int write_info(const void *src, size_t src_sz, size_t param_sz, void *
 
 static cl_int write_str(const char *s, size_t param_sz, void *param_val, size_t *ret_sz) {
     return write_info(s, strlen(s) + 1, param_sz, param_val, ret_sz);
+}
+
+static fake_cl_handle_t *alloc_cl_handle(int dev_idx) {
+    fake_cl_handle_t *h = (fake_cl_handle_t *)malloc(sizeof(fake_cl_handle_t));
+    if (!h) return NULL;
+    h->dev_idx = dev_idx;
+    atomic_fetch_add(&g_active_handles, 1);
+    return h;
+}
+
+static void free_cl_handle(void *h) {
+    if (h) {
+        free(h);
+        atomic_fetch_sub(&g_active_handles, 1);
+    }
 }
 
 cl_int clGetPlatformIDs(cl_uint num_entries, cl_platform_id *platforms, cl_uint *num_platforms) {
@@ -132,6 +166,7 @@ cl_int clGetDeviceInfo(cl_device_id d, cl_uint param, size_t sz, void *val, size
     int idx = cl_handle_to_idx(d);
     uint32_t bus = (uint32_t)cl_bus(idx);
     char buf[128];
+    cl_ulong vram = (cl_ulong)shim_vram_bytes(256);
 
     switch (param) {
         case CL_DEVICE_TYPE: {
@@ -150,9 +185,24 @@ cl_int clGetDeviceInfo(cl_device_id d, cl_uint param, size_t sz, void *val, size
             size_t wg = 256;
             return write_info(&wg, sizeof(wg), sz, val, ret);
         }
-        case CL_DEVICE_GLOBAL_MEM_SIZE: {
-            cl_ulong mem = 8ULL * 1024ULL * 1024ULL * 1024ULL;
-            return write_info(&mem, sizeof(mem), sz, val, ret);
+        case CL_DEVICE_MAX_CLOCK_FREQUENCY: {
+            cl_uint mhz = 1800;
+            return write_info(&mhz, sizeof(mhz), sz, val, ret);
+        }
+        case CL_DEVICE_MAX_MEM_ALLOC_SIZE:
+        case CL_DEVICE_GLOBAL_MEM_SIZE:
+            return write_info(&vram, sizeof(vram), sz, val, ret);
+        case CL_DEVICE_DOUBLE_FP_CONFIG: {
+            cl_ulong fp64 = 0x3Fu;
+            return write_info(&fp64, sizeof(fp64), sz, val, ret);
+        }
+        case CL_DEVICE_HALF_FP_CONFIG: {
+            cl_ulong fp16 = 0;
+            return write_info(&fp16, sizeof(fp16), sz, val, ret);
+        }
+        case CL_DEVICE_HOST_UNIFIED_MEMORY: {
+            cl_uint unified = 0;
+            return write_info(&unified, sizeof(unified), sz, val, ret);
         }
         case CL_DEVICE_NAME:
             snprintf(buf, sizeof(buf), "Fake OpenCL GPU %d", idx);
@@ -193,24 +243,23 @@ cl_int clGetDeviceInfo(cl_device_id d, cl_uint param, size_t sz, void *val, size
 
 cl_context clCreateContext(const void *props, cl_uint nd, const cl_device_id *devs,
                            void *cb, void *ud, cl_int *err) {
-    (void)props; (void)nd; (void)devs; (void)cb; (void)ud;
-    void *h = malloc(16);
+    (void)props; (void)cb; (void)ud;
+    int idx = (nd > 0 && devs) ? cl_handle_to_idx(devs[0]) : 0;
+    fake_cl_handle_t *h = alloc_cl_handle(idx);
     if (!h) { if (err) *err = CL_OUT_OF_HOST_MEMORY; return NULL; }
-    g_active_handles++;
     if (err) *err = CL_SUCCESS;
     return h;
 }
 
 cl_int clReleaseContext(cl_context ctx) {
-    if (ctx) { free(ctx); g_active_handles--; }
+    free_cl_handle(ctx);
     return CL_SUCCESS;
 }
 
 cl_command_queue clCreateCommandQueueWithProperties(cl_context c, cl_device_id d, const void *p, cl_int *err) {
-    (void)c; (void)d; (void)p;
-    void *h = malloc(16);
+    (void)c; (void)p;
+    fake_cl_handle_t *h = alloc_cl_handle(cl_handle_to_idx(d));
     if (!h) { if (err) *err = CL_OUT_OF_HOST_MEMORY; return NULL; }
-    g_active_handles++;
     if (err) *err = CL_SUCCESS;
     return h;
 }
@@ -221,7 +270,7 @@ cl_command_queue clCreateCommandQueue(cl_context c, cl_device_id d, cl_bitfield 
 }
 
 cl_int clReleaseCommandQueue(cl_command_queue q) {
-    if (q) { free(q); g_active_handles--; }
+    free_cl_handle(q);
     return CL_SUCCESS;
 }
 
@@ -233,7 +282,7 @@ cl_mem clCreateBuffer(cl_context c, cl_bitfield flags, size_t size, void *host_p
     m->size = size;
     if (!m->buf) { free(m); if (err) *err = CL_OUT_OF_HOST_MEMORY; return NULL; }
     if (host_ptr && size) memcpy(m->buf, host_ptr, size);
-    g_active_mems++;
+    atomic_fetch_add(&g_active_mems, 1);
     if (err) *err = CL_SUCCESS;
     return m;
 }
@@ -243,14 +292,36 @@ cl_int clReleaseMemObject(cl_mem mem) {
         fake_cl_mem_t *m = (fake_cl_mem_t *)mem;
         free(m->buf);
         free(m);
-        g_active_mems--;
+        atomic_fetch_sub(&g_active_mems, 1);
     }
+    return CL_SUCCESS;
+}
+
+void *clEnqueueMapBuffer(cl_command_queue q, cl_mem mem, cl_uint blk, cl_bitfield flags,
+                         size_t off, size_t sz, cl_uint nw, const void *wl, void *ev, cl_int *err) {
+    (void)q; (void)blk; (void)flags; (void)nw; (void)wl; (void)ev;
+    fake_cl_mem_t *m = (fake_cl_mem_t *)mem;
+    if (!m || off + sz > m->size) {
+        if (err) *err = CL_INVALID_VALUE;
+        return NULL;
+    }
+    if (err) *err = CL_SUCCESS;
+    return (unsigned char *)m->buf + off;
+}
+
+cl_int clEnqueueUnmapMemObject(cl_command_queue q, cl_mem mem, void *mapped_ptr,
+                               cl_uint nw, const void *wl, void *ev) {
+    (void)q; (void)mem; (void)mapped_ptr; (void)nw; (void)wl; (void)ev;
     return CL_SUCCESS;
 }
 
 cl_int clEnqueueWriteBuffer(cl_command_queue q, cl_mem mem, cl_uint blk, size_t off, size_t sz,
                             const void *ptr, cl_uint nw, const void *wl, void *ev) {
-    (void)q; (void)blk; (void)nw; (void)wl; (void)ev;
+    (void)blk; (void)nw; (void)wl; (void)ev;
+    int dev_idx = q ? ((fake_cl_handle_t *)q)->dev_idx : 0;
+    if (shim_fault_is("device_lost") && shim_fault_target_matches("opencl", dev_idx)) {
+        return CL_DEVICE_NOT_AVAILABLE;
+    }
     fake_cl_mem_t *m = (fake_cl_mem_t *)mem;
     if (m && ptr && off + sz <= m->size) memcpy((unsigned char *)m->buf + off, ptr, sz);
     return CL_SUCCESS;
@@ -258,13 +329,16 @@ cl_int clEnqueueWriteBuffer(cl_command_queue q, cl_mem mem, cl_uint blk, size_t 
 
 cl_int clEnqueueReadBuffer(cl_command_queue q, cl_mem mem, cl_uint blk, size_t off, size_t sz,
                            void *ptr, cl_uint nw, const void *wl, void *ev) {
-    (void)q; (void)blk; (void)nw; (void)wl; (void)ev;
+    (void)blk; (void)nw; (void)wl; (void)ev;
+    int dev_idx = q ? ((fake_cl_handle_t *)q)->dev_idx : 0;
+    if (shim_fault_is("device_lost") && shim_fault_target_matches("opencl", dev_idx)) {
+        return CL_DEVICE_NOT_AVAILABLE;
+    }
     fake_cl_mem_t *m = (fake_cl_mem_t *)mem;
     if (m && ptr && off + sz <= m->size) {
         memcpy(ptr, (const unsigned char *)m->buf + off, sz);
-        if (shim_fault_is("bitflip") && shim_fault_target_matches("opencl", 4) && !g_bitflip_injected) {
+        if (shim_fault_is("bitflip") && shim_fault_target_matches("opencl", dev_idx)) {
             ((unsigned char *)ptr)[0] ^= 0x01;
-            g_bitflip_injected = 1;
         }
     }
     return CL_SUCCESS;
@@ -272,7 +346,11 @@ cl_int clEnqueueReadBuffer(cl_command_queue q, cl_mem mem, cl_uint blk, size_t o
 
 cl_int clEnqueueCopyBuffer(cl_command_queue q, cl_mem src, cl_mem dst, size_t so, size_t doff,
                            size_t sz, cl_uint nw, const void *wl, void *ev) {
-    (void)q; (void)nw; (void)wl; (void)ev;
+    (void)nw; (void)wl; (void)ev;
+    int dev_idx = q ? ((fake_cl_handle_t *)q)->dev_idx : 0;
+    if (shim_fault_is("device_lost") && shim_fault_target_matches("opencl", dev_idx)) {
+        return CL_DEVICE_NOT_AVAILABLE;
+    }
     fake_cl_mem_t *s = (fake_cl_mem_t *)src;
     fake_cl_mem_t *d = (fake_cl_mem_t *)dst;
     if (s && d && so + sz <= s->size && doff + sz <= d->size) {
@@ -281,4 +359,96 @@ cl_int clEnqueueCopyBuffer(cl_command_queue q, cl_mem src, cl_mem dst, size_t so
     return CL_SUCCESS;
 }
 
-cl_int clFinish(cl_command_queue q) { (void)q; return CL_SUCCESS; }
+cl_int clFinish(cl_command_queue q) {
+    int dev_idx = q ? ((fake_cl_handle_t *)q)->dev_idx : 0;
+    if (shim_fault_is("device_lost") && shim_fault_target_matches("opencl", dev_idx)) {
+        return CL_DEVICE_NOT_AVAILABLE;
+    }
+    return CL_SUCCESS;
+}
+
+cl_program clCreateProgramWithSource(cl_context ctx, cl_uint count, const char **strings,
+                                     const size_t *lengths, cl_int *err) {
+    (void)count; (void)strings; (void)lengths;
+    int dev_idx = ctx ? ((fake_cl_handle_t *)ctx)->dev_idx : 0;
+    fake_cl_handle_t *h = alloc_cl_handle(dev_idx);
+    if (!h) { if (err) *err = CL_OUT_OF_HOST_MEMORY; return NULL; }
+    if (err) *err = CL_SUCCESS;
+    return h;
+}
+
+cl_program clCreateProgramWithBinary(cl_context ctx, cl_uint nd, const cl_device_id *devs,
+                                     const size_t *lengths, const unsigned char **bins,
+                                     cl_int *bin_status, cl_int *err) {
+    (void)nd; (void)devs; (void)lengths; (void)bins;
+    if (bin_status) bin_status[0] = CL_SUCCESS;
+    int dev_idx = ctx ? ((fake_cl_handle_t *)ctx)->dev_idx : 0;
+    fake_cl_handle_t *h = alloc_cl_handle(dev_idx);
+    if (!h) { if (err) *err = CL_OUT_OF_HOST_MEMORY; return NULL; }
+    if (err) *err = CL_SUCCESS;
+    return h;
+}
+
+cl_int clBuildProgram(cl_program p, cl_uint nd, const cl_device_id *devs, const char *opts,
+                      void *cb, void *ud) {
+    (void)p; (void)nd; (void)devs; (void)opts; (void)cb; (void)ud;
+    return CL_SUCCESS;
+}
+
+cl_int clGetProgramBuildInfo(cl_program p, cl_device_id d, cl_uint param, size_t sz, void *val, size_t *ret) {
+    (void)p; (void)d;
+    if (param == CL_PROGRAM_BUILD_LOG) return write_str("", sz, val, ret);
+    return CL_INVALID_VALUE;
+}
+
+cl_int clGetProgramInfo(cl_program p, cl_uint param, size_t sz, void *val, size_t *ret) {
+    (void)p;
+    if (param == CL_PROGRAM_BINARY_SIZES) {
+        size_t bsz = sizeof(FAKE_CL_BIN);
+        return write_info(&bsz, sizeof(bsz), sz, val, ret);
+    }
+    if (param == CL_PROGRAM_BINARIES) {
+        if (ret) *ret = sizeof(unsigned char *);
+        if (val && sz >= sizeof(unsigned char *)) {
+            unsigned char **ptrs = (unsigned char **)val;
+            if (ptrs[0]) memcpy(ptrs[0], FAKE_CL_BIN, sizeof(FAKE_CL_BIN));
+        }
+        return CL_SUCCESS;
+    }
+    return CL_INVALID_VALUE;
+}
+
+cl_int clReleaseProgram(cl_program p) {
+    free_cl_handle(p);
+    return CL_SUCCESS;
+}
+
+cl_kernel clCreateKernel(cl_program p, const char *name, cl_int *err) {
+    (void)name;
+    int dev_idx = p ? ((fake_cl_handle_t *)p)->dev_idx : 0;
+    fake_cl_handle_t *h = alloc_cl_handle(dev_idx);
+    if (!h) { if (err) *err = CL_OUT_OF_HOST_MEMORY; return NULL; }
+    if (err) *err = CL_SUCCESS;
+    return h;
+}
+
+cl_int clReleaseKernel(cl_kernel k) {
+    free_cl_handle(k);
+    return CL_SUCCESS;
+}
+
+cl_int clSetKernelArg(cl_kernel k, cl_uint idx, size_t sz, const void *val) {
+    (void)k; (void)idx; (void)sz; (void)val;
+    return CL_SUCCESS;
+}
+
+cl_int clEnqueueNDRangeKernel(cl_command_queue q, cl_kernel k, cl_uint work_dim,
+                              const size_t *gwo, const size_t *gws, const size_t *lws,
+                              cl_uint nw, const void *wl, void *ev) {
+    (void)k; (void)work_dim; (void)gwo; (void)gws; (void)lws; (void)nw; (void)wl; (void)ev;
+    int dev_idx = q ? ((fake_cl_handle_t *)q)->dev_idx : 0;
+    if (shim_fault_is("device_lost") && shim_fault_target_matches("opencl", dev_idx)) {
+        return CL_DEVICE_NOT_AVAILABLE;
+    }
+    return CL_SUCCESS;
+}

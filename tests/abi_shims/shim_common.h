@@ -2,6 +2,8 @@
 #ifndef CROSS_GPU_SHIM_COMMON_H
 #define CROSS_GPU_SHIM_COMMON_H
 
+#include <stdatomic.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -13,8 +15,13 @@ static inline int shim_env_int(const char *name, int fallback, int min_v, int ma
     if (!v || !*v) return fallback;
     char *end = NULL;
     long parsed = strtol(v, &end, 10);
-    if (end == v || parsed < min_v || parsed > max_v) return fallback;
+    if (end == v || *end != '\0' || parsed < min_v || parsed > max_v) return fallback;
     return (int)parsed;
+}
+
+static inline size_t shim_vram_bytes(int default_mib) {
+    int mib = shim_env_int("FAKE_GPU_VRAM_MIB", default_mib, 32, 65536);
+    return (size_t)mib * 1024ULL * 1024ULL;
 }
 
 static inline int shim_fault_is(const char *mode) {

@@ -8,6 +8,12 @@ on:
   push:
     tags:
       - "v*.*.*"
+  pull_request:
+    paths:
+      - ".github/workflows/emulation.yml"
+      - ".github/scripts/render_emulation_summary.py"
+      - "tests/abi_shims/**"
+      - "Makefile"
 
 permissions:
   contents: read
@@ -16,52 +22,62 @@ jobs:
   pocl-software-opencl:
     name: PoCL Software OpenCL (Real .cl Compilation & No-CPU-Fallback Gate)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install OpenCL ICD loader and PoCL
-        shell: bash
-        run: |
-          set -euo pipefail
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends ocl-icd-libopencl1 pocl-opencl-icd clinfo
-
-      - name: Run OpenCL ICD, kernel compilation, and fallback-gate checks with logging
+      - name: Run OpenCL ICD, kernel compilation, golden execution, and fallback-gate checks
         shell: bash
         run: |
           set -euo pipefail
           LOG_DIR="${RUNNER_TEMP}/emulation-logs"
           mkdir -p "${LOG_DIR}"
 
-          run_logged() {
+          run_logged_expect_rc() {
+            local expected="$1"; shift
             local name="$1"; shift
             local out="${LOG_DIR}/${name}.stdout.log"
             local err="${LOG_DIR}/${name}.stderr.log"
             local rc=0
-            printf '::group::[RUN] %s: %s\n' "${name}" "$*"
+            printf '%s\n' "$*" > "${LOG_DIR}/${name}.cmd"
+            printf '%s\n' "${expected}" > "${LOG_DIR}/${name}.expected_rc"
             "$@" >"${out}" 2>"${err}" || rc=$?
             printf '%s\n' "${rc}" > "${LOG_DIR}/${name}.rc"
-            printf '%s\n' "--- stdout (${name}.stdout.log) ---"
-            cat "${out}"
-            if [[ -s "${err}" ]]; then
-              printf '%s\n' "--- stderr (${name}.stderr.log) ---"
-              cat "${err}"
+            if [[ "${rc}" -eq "${expected}" ]]; then
+              printf '::group::[PASS] %s (rc=%s): %s\n' "${name}" "${rc}" "$*"
+              if [[ -s "${out}" ]]; then
+                printf '%s\n' "--- stdout (${name}.stdout.log) ---"
+                cat "${out}"
+              fi
+              if [[ -s "${err}" ]]; then
+                printf '%s\n' "--- stderr (${name}.stderr.log) ---"
+                cat "${err}"
+              fi
+              printf '::endgroup::\n'
+              return 0
             fi
-            printf '%s\n::endgroup::\n' "--- exit_code=${rc} ---"
-            return "${rc}"
+            printf 'expected=%s actual=%s\n' "${expected}" "${rc}" > "${LOG_DIR}/${name}.failed"
+            printf '::error title=%s failed (expected rc=%s, got rc=%s)::Command failed: %s\n' \
+              "${name}" "${expected}" "${rc}" "$*"
+            printf '======================================================================\n'
+            printf '[FAIL] %s: expected exit code %s, got %s\n' "${name}" "${expected}" "${rc}"
+            printf 'Command: %s\n' "$*"
+            printf '%s\n' "--- stderr (${name}.stderr.log) ---"
+            if [[ -s "${err}" ]]; then tail -n 200 "${err}"; else echo "(empty)"; fi
+            printf '%s\n' "--- stdout (${name}.stdout.log) ---"
+            if [[ -s "${out}" ]]; then tail -n 200 "${out}"; else echo "(empty)"; fi
+            printf '======================================================================\n'
+            return 1
           }
 
-          run_logged_expect_rc() {
-            local expected="$1"; shift
+          run_logged() {
             local name="$1"; shift
-            local rc=0
-            run_logged "${name}" "$@" || rc=$?
-            if [[ "${rc}" -ne "${expected}" ]]; then
-              echo "FAIL [${name}]: expected exit code ${expected}, got ${rc}" >&2
-              return 1
-            fi
+            run_logged_expect_rc 0 "${name}" "$@"
           }
+
+          run_logged "00_apt_install_pocl" bash -euo pipefail -c \
+            'sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends ocl-icd-libopencl1 pocl-opencl-icd clinfo'
 
           run_logged "01_clinfo" clinfo
 
@@ -78,12 +94,22 @@ jobs:
 
           run_logged_expect_rc 2 "03_run_no_gpu_init_error" \
             python3 -m src.cli run --backend opencl --test compute-fp32 --duration 100ms --json -v
+          run_logged "03_run_no_gpu_json_check" python3 - "${LOG_DIR}/03_run_no_gpu_init_error.stdout.log" <<'PY'
+          import json, sys
+          doc = json.loads(open(sys.argv[1], encoding="utf-8").read())
+          assert doc.get("exit_code") == 2, f"Expected JSON exit_code=2, got {doc}"
+          print("PASS: single-doc JSON emitted with exit_code=2")
+          PY
 
-          # 2. Compile every packaged OpenCL kernel source (.cl) through real libOpenCL.so.1 + PoCL LLVM
-          run_logged "04_compile_all_opencl_kernels" python3 - <<'PY'
+          # 2. Compile every packaged OpenCL/LevelZero .cl kernel through real libOpenCL.so.1 + PoCL LLVM,
+          #    validate #error "UNSUPPORTED:" hardware gates, and execute compute_int32/compute_fp32 golden checks.
+          run_logged "04_compile_and_exec_opencl_kernels" python3 - <<'PY'
           import ctypes
           import pathlib
+          import struct
           import sys
+
+          from src.workloads.common import golden_fp32_table, golden_int32
 
           cl = ctypes.CDLL("libOpenCL.so.1")
           c_int, c_uint, c_size_t, c_void_p, c_char_p = (
@@ -94,21 +120,53 @@ jobs:
           cl.clGetPlatformIDs.restype = c_int
           cl.clGetDeviceIDs.argtypes = [c_void_p, ctypes.c_uint64, c_uint, ctypes.POINTER(c_void_p), ctypes.POINTER(c_uint)]
           cl.clGetDeviceIDs.restype = c_int
+          cl.clGetDeviceInfo.argtypes = [c_void_p, c_uint, c_size_t, c_void_p, ctypes.POINTER(c_size_t)]
+          cl.clGetDeviceInfo.restype = c_int
           cl.clCreateContext.argtypes = [c_void_p, c_uint, ctypes.POINTER(c_void_p), c_void_p, c_void_p, ctypes.POINTER(c_int)]
           cl.clCreateContext.restype = c_void_p
+          cl.clCreateCommandQueue.argtypes = [c_void_p, c_void_p, ctypes.c_uint64, ctypes.POINTER(c_int)]
+          cl.clCreateCommandQueue.restype = c_void_p
+          cl.clReleaseCommandQueue.argtypes = [c_void_p]
+          cl.clReleaseCommandQueue.restype = c_int
+          cl.clCreateBuffer.argtypes = [c_void_p, ctypes.c_uint64, c_size_t, c_void_p, ctypes.POINTER(c_int)]
+          cl.clCreateBuffer.restype = c_void_p
+          cl.clReleaseMemObject.argtypes = [c_void_p]
+          cl.clReleaseMemObject.restype = c_int
           cl.clCreateProgramWithSource.argtypes = [c_void_p, c_uint, ctypes.POINTER(c_char_p), ctypes.POINTER(c_size_t), ctypes.POINTER(c_int)]
           cl.clCreateProgramWithSource.restype = c_void_p
           cl.clBuildProgram.argtypes = [c_void_p, c_uint, ctypes.POINTER(c_void_p), c_char_p, c_void_p, c_void_p]
           cl.clBuildProgram.restype = c_int
           cl.clGetProgramBuildInfo.argtypes = [c_void_p, c_void_p, c_uint, c_size_t, c_void_p, ctypes.POINTER(c_size_t)]
           cl.clGetProgramBuildInfo.restype = c_int
+          cl.clCreateKernel.argtypes = [c_void_p, c_char_p, ctypes.POINTER(c_int)]
+          cl.clCreateKernel.restype = c_void_p
+          cl.clReleaseKernel.argtypes = [c_void_p]
+          cl.clReleaseKernel.restype = c_int
+          cl.clSetKernelArg.argtypes = [c_void_p, c_uint, c_size_t, c_void_p]
+          cl.clSetKernelArg.restype = c_int
+          cl.clEnqueueNDRangeKernel.argtypes = [
+              c_void_p, c_void_p, c_uint,
+              ctypes.POINTER(c_size_t), ctypes.POINTER(c_size_t), ctypes.POINTER(c_size_t),
+              c_uint, ctypes.POINTER(c_void_p), ctypes.POINTER(c_void_p),
+          ]
+          cl.clEnqueueNDRangeKernel.restype = c_int
+          cl.clEnqueueReadBuffer.argtypes = [
+              c_void_p, c_void_p, c_uint, c_size_t, c_size_t, c_void_p,
+              c_uint, ctypes.POINTER(c_void_p), ctypes.POINTER(c_void_p),
+          ]
+          cl.clEnqueueReadBuffer.restype = c_int
+          cl.clFinish.argtypes = [c_void_p]
+          cl.clFinish.restype = c_int
           cl.clReleaseProgram.argtypes = [c_void_p]
           cl.clReleaseProgram.restype = c_int
           cl.clReleaseContext.argtypes = [c_void_p]
           cl.clReleaseContext.restype = c_int
 
           CL_DEVICE_TYPE_ALL = 0xFFFFFFFF
+          CL_DEVICE_EXTENSIONS = 0x1030
           CL_PROGRAM_BUILD_LOG = 0x1183
+          CL_MEM_READ_WRITE = 1 << 0
+          CL_TRUE = 1
 
           n_plat = c_uint(0)
           assert cl.clGetPlatformIDs(0, None, ctypes.byref(n_plat)) == 0 and n_plat.value > 0
@@ -124,57 +182,117 @@ jobs:
                   break
           assert found, "No PoCL OpenCL device found"
 
+          ext_sz = c_size_t(0)
+          cl.clGetDeviceInfo(dev, CL_DEVICE_EXTENSIONS, 0, None, ctypes.byref(ext_sz))
+          ext_buf = ctypes.create_string_buffer(max(1, ext_sz.value))
+          cl.clGetDeviceInfo(dev, CL_DEVICE_EXTENSIONS, ext_sz.value, ext_buf, None)
+          ext_tokens = set(ext_buf.value.decode("utf-8", errors="replace").split())
+          print(f"PoCL extensions count={len(ext_tokens)} has_fp64={'cl_khr_fp64' in ext_tokens} has_fp16={'cl_khr_fp16' in ext_tokens}")
+
           err = c_int(0)
           ctx = cl.clCreateContext(None, 1, ctypes.byref(dev), None, None, ctypes.byref(err))
           assert ctx and err.value == 0, f"clCreateContext failed: {err.value}"
+          queue = cl.clCreateCommandQueue(ctx, dev, 0, ctypes.byref(err))
+          assert queue and err.value == 0, f"clCreateCommandQueue failed: {err.value}"
 
           kernels = sorted(pathlib.Path("src/kernels").rglob("*.cl"))
-          assert kernels, "No .cl kernels found under src/kernels"
-          failures = []
-          for kpath in kernels:
-              src_bytes = kpath.read_bytes()
-              c_src = c_char_p(src_bytes)
-              c_len = c_size_t(len(src_bytes))
-              prog = cl.clCreateProgramWithSource(ctx, 1, ctypes.byref(c_src), ctypes.byref(c_len), ctypes.byref(err))
-              assert prog and err.value == 0, f"clCreateProgramWithSource failed for {kpath}: {err.value}"
-              rc = cl.clBuildProgram(prog, 1, ctypes.byref(dev), b"", None, None)
-              if rc != 0:
-                  log_size = c_size_t(0)
-                  cl.clGetProgramBuildInfo(prog, dev, CL_PROGRAM_BUILD_LOG, 0, None, ctypes.byref(log_size))
-                  buf = ctypes.create_string_buffer(max(1, log_size.value))
-                  cl.clGetProgramBuildInfo(prog, dev, CL_PROGRAM_BUILD_LOG, log_size.value, buf, None)
-                  msg = buf.value.decode("utf-8", errors="replace")
-                  # FP16/BF16/subgroup vendor extensions may not exist on software CPU PoCL; log clearly
-                  print(f"SKIP/FAIL [{rc}] {kpath}: {msg.strip()[:300]}", file=sys.stderr)
-                  if "cl_khr_fp16" not in src_bytes.decode("utf-8", "ignore") and "cl_intel_" not in src_bytes.decode("utf-8", "ignore"):
-                      failures.append((str(kpath), rc))
-              else:
-                  print(f"OK   {kpath}")
-              cl.clReleaseProgram(prog)
+          assert len(kernels) == 36, f"Expected 36 .cl kernels (18 opencl + 18 levelzero), got {len(kernels)}"
 
-          cl.clReleaseContext(ctx)
-          if failures:
-              raise SystemExit(f"Baseline OpenCL kernels failed PoCL compilation: {failures}")
-          print(f"Verified {len(kernels)} OpenCL kernel files against PoCL")
+          compiled_ok = 0
+          gated_ok = 0
+          failures = []
+
+          try:
+              for kpath in kernels:
+                  src_bytes = kpath.read_bytes()
+                  src_text = src_bytes.decode("utf-8")
+                  has_unsupported_gate = '#error "UNSUPPORTED:' in src_text
+
+                  c_src = c_char_p(src_bytes)
+                  c_len = c_size_t(len(src_bytes))
+                  prog = cl.clCreateProgramWithSource(ctx, 1, ctypes.byref(c_src), ctypes.byref(c_len), ctypes.byref(err))
+                  assert prog and err.value == 0, f"clCreateProgramWithSource failed for {kpath}: {err.value}"
+                  try:
+                      rc = cl.clBuildProgram(prog, 1, ctypes.byref(dev), b"", None, None)
+                      if rc == 0:
+                          compiled_ok += 1
+                          print(f"OK   {kpath}")
+                      else:
+                          log_size = c_size_t(0)
+                          cl.clGetProgramBuildInfo(prog, dev, CL_PROGRAM_BUILD_LOG, 0, None, ctypes.byref(log_size))
+                          buf = ctypes.create_string_buffer(max(1, log_size.value))
+                          cl.clGetProgramBuildInfo(prog, dev, CL_PROGRAM_BUILD_LOG, log_size.value, buf, None)
+                          msg = buf.value.decode("utf-8", errors="replace").strip()
+                          if has_unsupported_gate and "UNSUPPORTED:" in msg:
+                              gated_ok += 1
+                              first_line = next((ln.strip() for ln in msg.splitlines() if "UNSUPPORTED:" in ln), msg[:200])
+                              print(f"GATE {kpath} -> {first_line}")
+                          else:
+                              print(f"FAIL [{rc}] {kpath}:\n{msg}", file=sys.stderr)
+                              failures.append((str(kpath), rc, msg[:400]))
+                  finally:
+                      cl.clReleaseProgram(prog)
+
+              if failures:
+                  raise SystemExit(f"OpenCL kernel compilation failures against PoCL: {failures}")
+              assert compiled_ok >= 16, f"Expected at least 16 baseline .cl kernels to compile on PoCL, got {compiled_ok}"
+              print(f"Verified {len(kernels)} .cl kernels against PoCL: compiled={compiled_ok}, expected_unsupported_gates={gated_ok}, failures=0")
+
+              # Execute compute_int32 and compute_fp32 on PoCL and verify against host golden math
+              N = 64
+              for kname, ep, seed_a, seed_b, is_fp32 in (
+                  ("compute_int32", "kernel_compute_int32", 0x12345679, 0x9E3779B9, False),
+                  ("compute_fp32", "kernel_compute_fp32", 0.75, 0.5, True),
+              ):
+                  src_bytes = pathlib.Path(f"src/kernels/opencl/{kname}.cl").read_bytes()
+                  c_src = c_char_p(src_bytes)
+                  c_len = c_size_t(len(src_bytes))
+                  prog = cl.clCreateProgramWithSource(ctx, 1, ctypes.byref(c_src), ctypes.byref(c_len), ctypes.byref(err))
+                  assert prog and err.value == 0
+                  assert cl.clBuildProgram(prog, 1, ctypes.byref(dev), b"", None, None) == 0
+                  kern = cl.clCreateKernel(prog, ep.encode("utf-8"), ctypes.byref(err))
+                  assert kern and err.value == 0
+                  buf_mem = cl.clCreateBuffer(ctx, CL_MEM_READ_WRITE, N * 4, None, ctypes.byref(err))
+                  assert buf_mem and err.value == 0
+                  try:
+                      mem_arg = c_void_p(buf_mem)
+                      n_arg = ctypes.c_uint32(N)
+                      it_arg = ctypes.c_uint32(2)
+                      sa_arg = ctypes.c_float(seed_a) if is_fp32 else ctypes.c_uint32(seed_a)
+                      sb_arg = ctypes.c_float(seed_b) if is_fp32 else ctypes.c_uint32(seed_b)
+                      for idx, arg in enumerate((mem_arg, n_arg, it_arg, sa_arg, sb_arg)):
+                          assert cl.clSetKernelArg(kern, idx, ctypes.sizeof(arg), ctypes.byref(arg)) == 0
+                      gws = (c_size_t * 1)(N)
+                      assert cl.clEnqueueNDRangeKernel(queue, kern, 1, None, gws, None, 0, None, None) == 0
+                      assert cl.clFinish(queue) == 0
+                      out_raw = (ctypes.c_ubyte * (N * 4))()
+                      assert cl.clEnqueueReadBuffer(queue, buf_mem, CL_TRUE, 0, N * 4, out_raw, 0, None, None) == 0
+                      if is_fp32:
+                          got = struct.unpack(f"<{N}f", bytes(out_raw))
+                          table = golden_fp32_table(2, seed_a, seed_b)
+                          for gid, val in enumerate(got):
+                              exp = table[gid & 15]
+                              assert abs(val - exp) <= 1e-5, f"fp32 mismatch at gid={gid}: got={val} exp={exp}"
+                      else:
+                          got = struct.unpack(f"<{N}I", bytes(out_raw))
+                          exp = tuple(golden_int32(gid, 2, seed_a, seed_b) for gid in range(N))
+                          assert got == exp, f"int32 mismatch: got[:4]={got[:4]} exp[:4]={exp[:4]}"
+                      print(f"EXEC PASS {kname} on PoCL (N={N}, iterations=2 matched golden reference)")
+                  finally:
+                      cl.clReleaseMemObject(buf_mem)
+                      cl.clReleaseKernel(kern)
+                      cl.clReleaseProgram(prog)
+          finally:
+              cl.clReleaseCommandQueue(queue)
+              cl.clReleaseContext(ctx)
           PY
 
       - name: Write job summary
         if: always()
         shell: bash
         run: |
-          {
-            echo "### PoCL Software OpenCL Logs"
-            echo "| Command | Exit Code | Stdout (bytes) | Stderr (bytes) |"
-            echo "|---|---:|---:|---:|"
-            shopt -s nullglob
-            for rc_file in "${RUNNER_TEMP}/emulation-logs"/*.rc; do
-              name="$(basename "${rc_file}" .rc)"
-              rc="$(cat "${rc_file}")"
-              out_b="$(wc -c < "${RUNNER_TEMP}/emulation-logs/${name}.stdout.log" 2>/dev/null | tr -d ' ' || echo 0)"
-              err_b="$(wc -c < "${RUNNER_TEMP}/emulation-logs/${name}.stderr.log" 2>/dev/null | tr -d ' ' || echo 0)"
-              echo "| \`${name}\` | \`${rc}\` | ${out_b} | ${err_b} |"
-            done
-          } >> "${GITHUB_STEP_SUMMARY}"
+          python3 .github/scripts/render_emulation_summary.py \
+            "PoCL Software OpenCL Logs" "${RUNNER_TEMP}/emulation-logs" >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Upload command logs
         if: always()
@@ -186,13 +304,14 @@ jobs:
           if-no-files-found: ignore
 
   c-abi-driver-shims:
-    name: C11 Fake-Driver ABI Shims (SONAME Order, Fault Injection 3/4, Leak Checks)
+    name: C11 Fake-Driver ABI Shims (SONAME Order, 5-GPU Dedup, Fault Injection 3/4, Leak Checks)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Compile versioned SONAME shims and execute fault/leak tests with logging
+      - name: Compile versioned SONAME shims and execute multi-GPU / fault / leak tests
         shell: bash
         run: |
           set -euo pipefail
@@ -200,145 +319,219 @@ jobs:
           SHIM_DIR="${RUNNER_TEMP}/abi-shims"
           mkdir -p "${LOG_DIR}" "${SHIM_DIR}"
 
-          run_logged() {
+          run_logged_expect_rc() {
+            local expected="$1"; shift
             local name="$1"; shift
             local out="${LOG_DIR}/${name}.stdout.log"
             local err="${LOG_DIR}/${name}.stderr.log"
             local rc=0
-            printf '::group::[RUN] %s: %s\n' "${name}" "$*"
+            printf '%s\n' "$*" > "${LOG_DIR}/${name}.cmd"
+            printf '%s\n' "${expected}" > "${LOG_DIR}/${name}.expected_rc"
             "$@" >"${out}" 2>"${err}" || rc=$?
             printf '%s\n' "${rc}" > "${LOG_DIR}/${name}.rc"
+            if [[ "${rc}" -eq "${expected}" ]]; then
+              printf '::group::[PASS] %s (rc=%s): %s\n' "${name}" "${rc}" "$*"
+              if [[ -s "${out}" ]]; then
+                printf '%s\n' "--- stdout (${name}.stdout.log) ---"
+                cat "${out}"
+              fi
+              if [[ -s "${err}" ]]; then
+                printf '%s\n' "--- stderr (${name}.stderr.log) ---"
+                cat "${err}"
+              fi
+              printf '::endgroup::\n'
+              return 0
+            fi
+            printf 'expected=%s actual=%s\n' "${expected}" "${rc}" > "${LOG_DIR}/${name}.failed"
+            printf '::error title=%s failed (expected rc=%s, got rc=%s)::Command failed: %s\n' \
+              "${name}" "${expected}" "${rc}" "$*"
+            printf '======================================================================\n'
+            printf '[FAIL] %s: expected exit code %s, got %s\n' "${name}" "${expected}" "${rc}"
+            printf 'Command: %s\n' "$*"
+            printf '%s\n' "--- stderr (${name}.stderr.log) ---"
+            if [[ -s "${err}" ]]; then tail -n 200 "${err}"; else echo "(empty)"; fi
             printf '%s\n' "--- stdout (${name}.stdout.log) ---"
-            cat "${out}"
-            if [[ -s "${err}" ]]; then
-              printf '%s\n' "--- stderr (${name}.stderr.log) ---"
-              cat "${err}"
-            fi
-            printf '%s\n::endgroup::\n' "--- exit_code=${rc} ---"
-            return "${rc}"
+            if [[ -s "${out}" ]]; then tail -n 200 "${out}"; else echo "(empty)"; fi
+            printf '======================================================================\n'
+            return 1
           }
 
-          run_logged_expect_rc() {
-            local expected="$1"; shift
+          run_logged() {
             local name="$1"; shift
-            local rc=0
-            run_logged "${name}" "$@" || rc=$?
-            if [[ "${rc}" -ne "${expected}" ]]; then
-              echo "FAIL [${name}]: expected exit code ${expected}, got ${rc}" >&2
-              return 1
-            fi
+            run_logged_expect_rc 0 "${name}" "$@"
           }
 
-          # Deliberately create ONLY versioned runtime SONAMEs (NO unversioned .so symlinks)
+          # Deliberately build ONLY versioned runtime SONAMEs (NO unversioned .so symlinks)
           # to prove CrossGPU never depends on -dev/-devel symlinks.
-          run_logged "01_build_fake_cuda" \
-            cc -std=c11 -O2 -Wall -Wextra -shared -fPIC \
-            -Wl,-soname,libcuda.so.1 \
-            -o "${SHIM_DIR}/libcuda.so.1" tests/abi_shims/fake_cuda.c
-
-          run_logged "02_build_fake_nvrtc" \
-            cc -std=c11 -O2 -Wall -Wextra -shared -fPIC \
-            -Wl,-soname,libnvrtc.so.12 \
-            -o "${SHIM_DIR}/libnvrtc.so.12" tests/abi_shims/fake_nvrtc.c
-
-          # 1. SONAME discovery & strict single-doc JSON under -v
-          run_logged "03_cuda_shim_list" \
-            env LD_LIBRARY_PATH="${SHIM_DIR}" CROSS_GPU_NO_CACHE=1 \
-            python3 -m src.cli list --backend cuda --json -v
-          run_logged "03_cuda_shim_list_json_check" python3 -m json.tool "${LOG_DIR}/03_cuda_shim_list.stdout.log"
-
-          run_logged "04_cuda_shim_info" \
-            env LD_LIBRARY_PATH="${SHIM_DIR}" CROSS_GPU_NO_CACHE=1 \
-            python3 -m src.cli info --backend cuda --json -v
-          run_logged "04_cuda_shim_info_json_check" python3 -m json.tool "${LOG_DIR}/04_cuda_shim_info.stdout.log"
-
-          # 2. Normal H2D/D2H round-trip pass (rc=0) + destructor leak check (exits 99 if leaked)
-          run_logged_expect_rc 0 "05_cuda_shim_pass_and_leak_check" \
-            env LD_LIBRARY_PATH="${SHIM_DIR}" CROSS_GPU_NO_CACHE=1 FAKE_GPU_LEAK_CHECK=1 \
-            python3 -m src.cli run --backend cuda --test bandwidth-h2d,bandwidth-d2h --duration 150ms --json -v
-          run_logged "05_cuda_shim_pass_json_check" python3 -m json.tool "${LOG_DIR}/05_cuda_shim_pass_and_leak_check.stdout.log"
-
-          # 3. Fault injection: 1-bit flip during D2H copy -> COMPUTE_ERROR (3) + zero leaks
-          run_logged_expect_rc 3 "06_cuda_shim_fault_bitflip" \
-            env LD_LIBRARY_PATH="${SHIM_DIR}" CROSS_GPU_NO_CACHE=1 FAKE_GPU_LEAK_CHECK=1 FAKE_GPU_FAULT=bitflip \
-            python3 -m src.cli run --backend cuda --test bandwidth-d2h --duration 150ms --json -v
-          run_logged "06_cuda_shim_fault_bitflip_json_check" python3 -m json.tool "${LOG_DIR}/06_cuda_shim_fault_bitflip.stdout.log"
-
-          # 4. Fault injection: CUDA_ERROR_ECC_UNCORRECTABLE (214) -> HARDWARE_ERROR (4) + zero leaks
-          run_logged_expect_rc 4 "07_cuda_shim_fault_ecc_ue" \
-            env LD_LIBRARY_PATH="${SHIM_DIR}" CROSS_GPU_NO_CACHE=1 FAKE_GPU_LEAK_CHECK=1 FAKE_GPU_FAULT=ecc_ue \
-            python3 -m src.cli run --backend cuda --test bandwidth-h2d --duration 150ms --json -v
-          run_logged "07_cuda_shim_fault_ecc_ue_json_check" python3 -m json.tool "${LOG_DIR}/07_cuda_shim_fault_ecc_ue.stdout.log"
-
-          # Build ONLY versioned runtime SONAMEs (no unversioned .so symlinks)
-          CC_FLAGS="-std=c11 -O2 -Wall -Wextra -shared -fPIC -Itests/abi_shims"
-          run_logged "01_build_fake_cuda"      cc ${CC_FLAGS} -Wl,-soname,libcuda.so.1      -o "${SHIM_DIR}/libcuda.so.1"      tests/abi_shims/fake_cuda.c
-          run_logged "02_build_fake_nvrtc"     cc ${CC_FLAGS} -Wl,-soname,libnvrtc.so.12    -o "${SHIM_DIR}/libnvrtc.so.12"    tests/abi_shims/fake_nvrtc.c
-          run_logged "03_build_fake_hip"       cc ${CC_FLAGS} -Wl,-soname,libamdhip64.so.6  -o "${SHIM_DIR}/libamdhip64.so.6"  tests/abi_shims/fake_hip.c
-          run_logged "04_build_fake_hiprtc"    cc ${CC_FLAGS} -Wl,-soname,libhiprtc.so.6    -o "${SHIM_DIR}/libhiprtc.so.6"    tests/abi_shims/fake_hiprtc.c
-          run_logged "05_build_fake_levelzero" cc ${CC_FLAGS} -Wl,-soname,libze_loader.so.1 -o "${SHIM_DIR}/libze_loader.so.1" tests/abi_shims/fake_levelzero.c
-          run_logged "06_build_fake_opencl"    cc ${CC_FLAGS} -Wl,-soname,libOpenCL.so.1    -o "${SHIM_DIR}/libOpenCL.so.1"    tests/abi_shims/fake_opencl.c
+          CC_FLAGS=(-std=c11 -O2 -Wall -Wextra -Werror -shared -fPIC -Itests/abi_shims)
+          run_logged "01_build_fake_cuda"      cc "${CC_FLAGS[@]}" -Wl,-soname,libcuda.so.1      -o "${SHIM_DIR}/libcuda.so.1"      tests/abi_shims/fake_cuda.c
+          run_logged "02_build_fake_nvrtc"     cc "${CC_FLAGS[@]}" -Wl,-soname,libnvrtc.so.12    -o "${SHIM_DIR}/libnvrtc.so.12"    tests/abi_shims/fake_nvrtc.c
+          run_logged "03_build_fake_hip"       cc "${CC_FLAGS[@]}" -Wl,-soname,libamdhip64.so.6  -o "${SHIM_DIR}/libamdhip64.so.6"  tests/abi_shims/fake_hip.c
+          run_logged "04_build_fake_hiprtc"    cc "${CC_FLAGS[@]}" -Wl,-soname,libhiprtc.so.6    -o "${SHIM_DIR}/libhiprtc.so.6"    tests/abi_shims/fake_hiprtc.c
+          run_logged "05_build_fake_levelzero" cc "${CC_FLAGS[@]}" -Wl,-soname,libze_loader.so.1 -o "${SHIM_DIR}/libze_loader.so.1" tests/abi_shims/fake_levelzero.c
+          run_logged "06_build_fake_opencl"    cc "${CC_FLAGS[@]}" -Wl,-soname,libOpenCL.so.1    -o "${SHIM_DIR}/libOpenCL.so.1"    tests/abi_shims/fake_opencl.c
 
           # 1. Heterogeneous 5-GPU dedup check (9 raw handles -> 5 unique physical GPUs)
           run_logged "07_5gpu_hetero_list" \
-            env LD_LIBRARY_PATH="${SHIM_DIR}" CROSS_GPU_NO_CACHE=1 \
+            env LD_LIBRARY_PATH="${SHIM_DIR}" CROSS_GPU_NO_CACHE=1 FAKE_GPU_VRAM_MIB=64 \
             python3 -m src.cli list --json -v
+          run_logged "07_5gpu_hetero_list_json" python3 -m json.tool "${LOG_DIR}/07_5gpu_hetero_list.stdout.log"
           run_logged "07_assert_5gpu_dedup" python3 - "${LOG_DIR}/07_5gpu_hetero_list.stdout.log" <<'PY'
           import collections, json, sys
           data = json.loads(open(sys.argv[1], encoding="utf-8").read())
           devs = data["devices"]
           assert len(devs) == 5, f"Expected 5 deduplicated GPUs, got {len(devs)}: {devs}"
-          counts = collections.Counter(d["backend"] for d in devs)
+          counts = collections.Counter(d["active_backend"] for d in devs)
           expected = {"cuda": 2, "hip": 1, "levelzero": 1, "opencl": 1}
           assert dict(counts) == expected, f"Backend dedup mismatch: got {dict(counts)}, expected {expected}"
           print(f"PASS: 9 raw handles deduplicated cleanly to 5 GPUs: {dict(counts)}")
           PY
 
-          # 2. Homogeneous 5-GPU CUDA rig check (FAKE_CUDA_COUNT=5, other backends=0)
-          run_logged "08_5gpu_cuda_only_list" \
-            env LD_LIBRARY_PATH="${SHIM_DIR}" CROSS_GPU_NO_CACHE=1 \
-                FAKE_CUDA_COUNT=5 FAKE_HIP_COUNT=0 FAKE_L0_COUNT=0 FAKE_CL_COUNT=0 \
-            python3 -m src.cli list --json -v
-          run_logged "08_assert_5gpu_cuda_only" python3 - "${LOG_DIR}/08_5gpu_cuda_only_list.stdout.log" <<'PY'
+          # 2. Verify detailed ABI struct decoding across all 4 native/OpenCL backends
+          run_logged "08_5gpu_hetero_info" \
+            env LD_LIBRARY_PATH="${SHIM_DIR}" CROSS_GPU_NO_CACHE=1 FAKE_GPU_VRAM_MIB=64 \
+            python3 -m src.cli info --json -v
+          run_logged "08_5gpu_hetero_info_json" python3 -m json.tool "${LOG_DIR}/08_5gpu_hetero_info.stdout.log"
+          run_logged "08_assert_abi_fields" python3 - "${LOG_DIR}/08_5gpu_hetero_info.stdout.log" <<'PY'
           import json, sys
           devs = json.loads(open(sys.argv[1], encoding="utf-8").read())["devices"]
-          assert len(devs) == 5 and all(d["backend"] == "cuda" for d in devs), devs
+          by_backend = {}
+          for d in devs:
+              by_backend.setdefault(d["active_backend"], []).append(d)
+          assert len(by_backend["cuda"]) == 2, by_backend
+          assert by_backend["cuda"][0]["pci_bdf"] == "0000:01:00.0", by_backend["cuda"][0]
+          assert by_backend["cuda"][0]["available_backends"] == ["cuda", "opencl"], by_backend["cuda"][0]
+          hip = by_backend["hip"][0]
+          assert hip["name"] == "Fake AMD HIP GPU 0", hip
+          assert hip["architecture"] == "gfx1100", hip
+          assert hip["pci_bdf"] == "0000:03:00.0", hip
+          assert hip["available_backends"] == ["hip", "opencl"], hip
+          l0 = by_backend["levelzero"][0]
+          assert l0["name"] == "Fake Intel Level Zero GPU 0", l0
+          assert l0["pci_bdf"] == "0000:04:00.0", l0
+          assert l0["available_backends"] == ["levelzero", "opencl"], l0
+          ocl = by_backend["opencl"][0]
+          assert ocl["name"] == "Fake OpenCL GPU 4", ocl
+          assert ocl["pci_bdf"] == "0000:05:00.0", ocl
+          print("PASS: All 4 C ABI shims decoded exact names, architectures, PCI BDFs, and fallback bindings")
+          PY
+
+          # 3. Homogeneous 5-GPU CUDA rig check (FAKE_CUDA_COUNT=5, other backends=0)
+          run_logged "09_5gpu_cuda_only_list" \
+            env LD_LIBRARY_PATH="${SHIM_DIR}" CROSS_GPU_NO_CACHE=1 FAKE_GPU_VRAM_MIB=64 \
+                FAKE_CUDA_COUNT=5 FAKE_HIP_COUNT=0 FAKE_L0_COUNT=0 FAKE_CL_COUNT=0 \
+            python3 -m src.cli list --json -v
+          run_logged "09_assert_5gpu_cuda_only" python3 - "${LOG_DIR}/09_5gpu_cuda_only_list.stdout.log" <<'PY'
+          import json, sys
+          devs = json.loads(open(sys.argv[1], encoding="utf-8").read())["devices"]
+          assert len(devs) == 5 and all(d["active_backend"] == "cuda" for d in devs), devs
           print("PASS: 5 homogeneous CUDA GPUs enumerated")
           PY
 
-          # 3. Multi-GPU pass + destructor leak check across all 5 GPUs
-          run_logged_expect_rc 0 "09_5gpu_all_pass_leak_check" \
-            env LD_LIBRARY_PATH="${SHIM_DIR}" CROSS_GPU_NO_CACHE=1 FAKE_GPU_LEAK_CHECK=1 \
-            python3 -m src.cli run --device all --test bandwidth-h2d,bandwidth-d2h --duration 120ms --json -v
+          # 4. Exercise versioned NVRTC (libnvrtc.so.12) & HIPRTC (libhiprtc.so.6) compile + module load/unload + leak checks
+          run_logged "10_nvrtc_hiprtc_compile_and_leak_check" \
+            env LD_LIBRARY_PATH="${SHIM_DIR}" CROSS_GPU_NO_CACHE=1 FAKE_GPU_LEAK_CHECK=1 FAKE_GPU_VRAM_MIB=64 \
+            python3 - <<'PY'
+          from src.backends.cuda_backend import CudaBackend
+          from src.backends.hip_backend import HipBackend
+          from src.embed_binary import compile_kernel_runtime
 
-          # 4. Targeted fault injection on GPU 2 (HIP bitflip -> COMPUTE_ERROR 3) & GPU 3 (Level Zero device_lost -> HARDWARE_ERROR 4)
-          run_logged_expect_rc 3 "10_5gpu_hip_bitflip_rc3" \
-            env LD_LIBRARY_PATH="${SHIM_DIR}" CROSS_GPU_NO_CACHE=1 FAKE_GPU_LEAK_CHECK=1 \
+          cuda_bin = compile_kernel_runtime("cuda", "compute-fp32", "sm_89")
+          assert cuda_bin.format == "ptx" and b"kernel_fake" in cuda_bin.binary_bytes, cuda_bin
+          cb = CudaBackend()
+          cdev = cb.enumerate_devices()[0]
+          cctx = cb.create_context(cdev)
+          try:
+              cmod = cb.load_module(cctx, cuda_bin)
+              cb.unload_module(cctx, cmod)
+          finally:
+              cb.destroy_context(cctx)
+
+          hip_bin = compile_kernel_runtime("hip", "compute-fp32", "gfx1100")
+          assert hip_bin.format == "hsaco" and hip_bin.binary_bytes[:4] == b"\x7fELF", hip_bin
+          hb = HipBackend()
+          hdev = hb.enumerate_devices()[0]
+          hctx = hb.create_context(hdev)
+          try:
+              hmod = hb.load_module(hctx, hip_bin)
+              hb.unload_module(hctx, hmod)
+          finally:
+              hb.destroy_context(hctx)
+
+          print("PASS: libnvrtc.so.12 + libhiprtc.so.6 compiled, loaded, unloaded cleanly with zero leaks")
+          PY
+
+          # 5. Multi-GPU pass + destructor leak check across all 5 GPUs
+          run_logged_expect_rc 0 "11_5gpu_all_pass_leak_check" \
+            env LD_LIBRARY_PATH="${SHIM_DIR}" CROSS_GPU_NO_CACHE=1 FAKE_GPU_LEAK_CHECK=1 FAKE_GPU_VRAM_MIB=64 \
+            python3 -m src.cli run --device all --test bandwidth-h2d,bandwidth-d2h --duration 120ms --json -v
+          run_logged "11_assert_5gpu_all_pass" python3 - "${LOG_DIR}/11_5gpu_all_pass_leak_check.stdout.log" <<'PY'
+          import json, sys
+          doc = json.loads(open(sys.argv[1], encoding="utf-8").read())
+          results = doc["results"]
+          assert len(results) == 10, f"Expected 10 results (5 GPUs x 2 workloads), got {len(results)}"
+          assert all(r["status"] == "passed" for r in results), results
+          print("PASS: all 10 multi-GPU H2D/D2H workloads passed with zero leaks")
+          PY
+
+          # 6. Targeted CUDA faults: bitflip -> COMPUTE_ERROR (3), ECC uncorrectable -> HARDWARE_ERROR (4)
+          run_logged_expect_rc 3 "12_cuda_fault_bitflip_rc3" \
+            env LD_LIBRARY_PATH="${SHIM_DIR}" CROSS_GPU_NO_CACHE=1 FAKE_GPU_LEAK_CHECK=1 FAKE_GPU_VRAM_MIB=64 \
+                FAKE_GPU_FAULT=bitflip FAKE_GPU_FAULT_BACKEND=cuda FAKE_GPU_FAULT_DEVICE=0 \
+            python3 -m src.cli run --backend cuda --device 0 --test bandwidth-d2h --duration 120ms --json -v
+          run_logged "12_cuda_fault_bitflip_json" python3 -m json.tool "${LOG_DIR}/12_cuda_fault_bitflip_rc3.stdout.log"
+
+          run_logged_expect_rc 4 "13_cuda_fault_ecc_ue_rc4" \
+            env LD_LIBRARY_PATH="${SHIM_DIR}" CROSS_GPU_NO_CACHE=1 FAKE_GPU_LEAK_CHECK=1 FAKE_GPU_VRAM_MIB=64 \
+                FAKE_GPU_FAULT=ecc_ue FAKE_GPU_FAULT_BACKEND=cuda FAKE_GPU_FAULT_DEVICE=0 \
+            python3 -m src.cli run --backend cuda --device 0 --test bandwidth-h2d --duration 120ms --json -v
+          run_logged "13_cuda_fault_ecc_ue_json" python3 -m json.tool "${LOG_DIR}/13_cuda_fault_ecc_ue_rc4.stdout.log"
+
+          # 7. Targeted multi-GPU faults across HIP (bitflip -> 3), Level Zero (device_lost -> 4), OpenCL (bitflip -> 3)
+          run_logged_expect_rc 3 "14_5gpu_hip_bitflip_rc3" \
+            env LD_LIBRARY_PATH="${SHIM_DIR}" CROSS_GPU_NO_CACHE=1 FAKE_GPU_LEAK_CHECK=1 FAKE_GPU_VRAM_MIB=64 \
                 FAKE_GPU_FAULT=bitflip FAKE_GPU_FAULT_BACKEND=hip \
             python3 -m src.cli run --device all --test bandwidth-d2h --duration 120ms --json -v
+          run_logged "14_assert_hip_bitflip" python3 - "${LOG_DIR}/14_5gpu_hip_bitflip_rc3.stdout.log" <<'PY'
+          import json, sys
+          doc = json.loads(open(sys.argv[1], encoding="utf-8").read())
+          failed = [r["backend"] for r in doc["results"] if r["status"] == "failed"]
+          passed = [r["backend"] for r in doc["results"] if r["status"] == "passed"]
+          assert failed == ["hip"] and len(passed) == 4, doc["results"]
+          print("PASS: HIP GPU reported COMPUTE_ERROR while 4 peer GPUs passed")
+          PY
 
-          run_logged_expect_rc 4 "11_5gpu_l0_device_lost_rc4" \
-            env LD_LIBRARY_PATH="${SHIM_DIR}" CROSS_GPU_NO_CACHE=1 FAKE_GPU_LEAK_CHECK=1 \
+          run_logged_expect_rc 4 "15_5gpu_l0_device_lost_rc4" \
+            env LD_LIBRARY_PATH="${SHIM_DIR}" CROSS_GPU_NO_CACHE=1 FAKE_GPU_LEAK_CHECK=1 FAKE_GPU_VRAM_MIB=64 \
                 FAKE_GPU_FAULT=device_lost FAKE_GPU_FAULT_BACKEND=levelzero \
             python3 -m src.cli run --device all --test bandwidth-h2d --duration 120ms --json -v
-            
+          run_logged "15_assert_l0_device_lost" python3 - "${LOG_DIR}/15_5gpu_l0_device_lost_rc4.stdout.log" <<'PY'
+          import json, sys
+          doc = json.loads(open(sys.argv[1], encoding="utf-8").read())
+          hw = [r["backend"] for r in doc["results"] if r["status"] == "hardware_error"]
+          assert hw == ["levelzero"], doc["results"]
+          print("PASS: Level Zero GPU reported HARDWARE_ERROR (device_lost)")
+          PY
+
+          run_logged_expect_rc 3 "16_5gpu_opencl_bitflip_rc3" \
+            env LD_LIBRARY_PATH="${SHIM_DIR}" CROSS_GPU_NO_CACHE=1 FAKE_GPU_LEAK_CHECK=1 FAKE_GPU_VRAM_MIB=64 \
+                FAKE_GPU_FAULT=bitflip FAKE_GPU_FAULT_BACKEND=opencl \
+            python3 -m src.cli run --device all --test bandwidth-d2h --duration 120ms --json -v
+          run_logged "16_assert_opencl_bitflip" python3 - "${LOG_DIR}/16_5gpu_opencl_bitflip_rc3.stdout.log" <<'PY'
+          import json, sys
+          doc = json.loads(open(sys.argv[1], encoding="utf-8").read())
+          failed = [r["backend"] for r in doc["results"] if r["status"] == "failed"]
+          passed = [r["backend"] for r in doc["results"] if r["status"] == "passed"]
+          assert failed == ["opencl"] and len(passed) == 4, doc["results"]
+          print("PASS: OpenCL GPU reported COMPUTE_ERROR while 4 peer GPUs passed")
+          PY
+
       - name: Write job summary
         if: always()
         shell: bash
         run: |
-          {
-            echo "### C11 Fake-Driver ABI Shim Logs"
-            echo "| Command | Exit Code | Stdout (bytes) | Stderr (bytes) |"
-            echo "|---|---:|---:|---:|"
-            shopt -s nullglob
-            for rc_file in "${RUNNER_TEMP}/emulation-logs"/*.rc; do
-              name="$(basename "${rc_file}" .rc)"
-              rc="$(cat "${rc_file}")"
-              out_b="$(wc -c < "${RUNNER_TEMP}/emulation-logs/${name}.stdout.log" 2>/dev/null | tr -d ' ' || echo 0)"
-              err_b="$(wc -c < "${RUNNER_TEMP}/emulation-logs/${name}.stderr.log" 2>/dev/null | tr -d ' ' || echo 0)"
-              echo "| \`${name}\` | \`${rc}\` | ${out_b} | ${err_b} |"
-            done
-          } >> "${GITHUB_STEP_SUMMARY}"
+          python3 .github/scripts/render_emulation_summary.py \
+            "C11 Fake-Driver ABI Shim Logs" "${RUNNER_TEMP}/emulation-logs" >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Upload command logs
         if: always()
@@ -349,9 +542,299 @@ jobs:
           retention-days: 14
           if-no-files-found: ignore
 
+  macos-metal-emulation:
+    name: macOS Metal Emulation (Real .metal Compilation & ObjC arm64 ABI Shim)
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Compile .metal kernels and run Objective-C Metal ABI shim checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          LOG_DIR="${RUNNER_TEMP}/emulation-logs"
+          SHIM_DIR="${RUNNER_TEMP}/abi-shims"
+          mkdir -p "${LOG_DIR}" "${SHIM_DIR}"
+
+          run_logged_expect_rc() {
+            local expected="$1"; shift
+            local name="$1"; shift
+            local out="${LOG_DIR}/${name}.stdout.log"
+            local err="${LOG_DIR}/${name}.stderr.log"
+            local rc=0
+            printf '%s\n' "$*" > "${LOG_DIR}/${name}.cmd"
+            printf '%s\n' "${expected}" > "${LOG_DIR}/${name}.expected_rc"
+            "$@" >"${out}" 2>"${err}" || rc=$?
+            printf '%s\n' "${rc}" > "${LOG_DIR}/${name}.rc"
+            if [[ "${rc}" -eq "${expected}" ]]; then
+              printf '::group::[PASS] %s (rc=%s): %s\n' "${name}" "${rc}" "$*"
+              if [[ -s "${out}" ]]; then
+                printf '%s\n' "--- stdout (${name}.stdout.log) ---"
+                cat "${out}"
+              fi
+              if [[ -s "${err}" ]]; then
+                printf '%s\n' "--- stderr (${name}.stderr.log) ---"
+                cat "${err}"
+              fi
+              printf '::endgroup::\n'
+              return 0
+            fi
+            printf 'expected=%s actual=%s\n' "${expected}" "${rc}" > "${LOG_DIR}/${name}.failed"
+            printf '::error title=%s failed (expected rc=%s, got rc=%s)::Command failed: %s\n' \
+              "${name}" "${expected}" "${rc}" "$*"
+            printf '======================================================================\n'
+            printf '[FAIL] %s: expected exit code %s, got %s\n' "${name}" "${expected}" "${rc}"
+            printf 'Command: %s\n' "$*"
+            printf '%s\n' "--- stderr (${name}.stderr.log) ---"
+            if [[ -s "${err}" ]]; then tail -n 200 "${err}"; else echo "(empty)"; fi
+            printf '%s\n' "--- stdout (${name}.stdout.log) ---"
+            if [[ -s "${out}" ]]; then tail -n 200 "${out}"; else echo "(empty)"; fi
+            printf '======================================================================\n'
+            return 1
+          }
+
+          run_logged() {
+            local name="$1"; shift
+            run_logged_expect_rc 0 "${name}" "$@"
+          }
+
+          # 1. Ensure Xcode Metal compiler toolchain is ready (Xcode 16+ separates MetalToolchain)
+          run_logged "00_metal_toolchain_setup" bash -euo pipefail -c '
+            xcode-select -p
+            if ! xcrun -sdk macosx metal --version >/dev/null 2>&1; then
+              xcodebuild -downloadComponent MetalToolchain || true
+              sudo xcodebuild -runFirstLaunch || true
+            fi
+            xcrun -sdk macosx metal --version
+          '
+
+          # 2. Compile every packaged .metal kernel through Apple xcrun metal + metallib
+          run_logged "01_compile_all_metal_kernels" python3 - <<'PY'
+          import pathlib
+          import subprocess
+          import sys
+          import tempfile
+
+          kernels = sorted(pathlib.Path("src/kernels/metal").glob("*.metal"))
+          assert len(kernels) == 18, f"Expected 18 .metal kernels, got {len(kernels)}"
+
+          compiled_ok = 0
+          gated_ok = 0
+          failures = []
+
+          with tempfile.TemporaryDirectory(prefix="cross_gpu_mtl_ci_") as tmp:
+              tmp_path = pathlib.Path(tmp)
+              for kpath in kernels:
+                  src_text = kpath.read_text(encoding="utf-8")
+                  has_unsupported_gate = '#error "UNSUPPORTED:' in src_text
+                  air_path = tmp_path / f"{kpath.stem}.air"
+                  lib_path = tmp_path / f"{kpath.stem}.metallib"
+
+                  res1 = subprocess.run(
+                      ["xcrun", "-sdk", "macosx", "metal", "-c", str(kpath), "-o", str(air_path)],
+                      capture_output=True,
+                      text=True,
+                      check=False,
+                  )
+                  msg1 = f"{res1.stdout}\n{res1.stderr}".strip()
+                  if res1.returncode != 0:
+                      if has_unsupported_gate and "UNSUPPORTED:" in msg1:
+                          gated_ok += 1
+                          first_line = next((ln.strip() for ln in msg1.splitlines() if "UNSUPPORTED:" in ln), msg1[:200])
+                          print(f"GATE {kpath} -> {first_line}")
+                          continue
+                      print(f"FAIL [metal rc={res1.returncode}] {kpath}:\n{msg1}", file=sys.stderr)
+                      failures.append((str(kpath), res1.returncode, msg1[:400]))
+                      continue
+
+                  res2 = subprocess.run(
+                      ["xcrun", "-sdk", "macosx", "metallib", str(air_path), "-o", str(lib_path)],
+                      capture_output=True,
+                      text=True,
+                      check=False,
+                  )
+                  msg2 = f"{res2.stdout}\n{res2.stderr}".strip()
+                  if res2.returncode != 0 or not lib_path.is_file():
+                      print(f"FAIL [metallib rc={res2.returncode}] {kpath}:\n{msg2}", file=sys.stderr)
+                      failures.append((str(kpath), res2.returncode, msg2[:400]))
+                      continue
+
+                  raw_lib = lib_path.read_bytes()
+                  assert raw_lib[:4] == b"MTLB", f"{kpath} metallib missing MTLB header: {raw_lib[:8]!r}"
+                  compiled_ok += 1
+                  print(f"OK   {kpath} ({len(raw_lib)} B MTLB)")
+
+          if failures:
+              raise SystemExit(f"Metal kernel compilation failures: {failures}")
+          assert compiled_ok >= 11, f"Expected at least 11 baseline .metal kernels to compile, got {compiled_ok}"
+          print(f"Verified {len(kernels)} .metal kernels via xcrun: compiled={compiled_ok}, expected_unsupported_gates={gated_ok}, failures=0")
+          PY
+
+          # 3. Build Objective-C Metal ABI shim dylib (uses real system libobjc.A.dylib + Foundation + libSystem.B.dylib)
+          run_logged "02_build_fake_metal" \
+            cc -ObjC -fno-objc-arc -O2 -Wall -Wextra -Werror -shared -fPIC \
+            -Itests/abi_shims -framework Foundation \
+            -o "${SHIM_DIR}/libfake_metal.dylib" tests/abi_shims/fake_metal.m
+
+          # 4. Exercise real arm64 objc_msgSend bridge: list, info, ABI decoding, metallib/msl_source load, 24B _MTLSize dispatch, zero leaks
+          run_logged "03_metal_list_info_and_dispatch" \
+            env FAKE_METAL_LIB="${SHIM_DIR}/libfake_metal.dylib" CROSS_GPU_NO_CACHE=1 FAKE_GPU_LEAK_CHECK=1 FAKE_GPU_VRAM_MIB=64 \
+            python3 - <<'PY'
+          import ctypes, io, json, os
+          from unittest import mock
+          import src.backends.metal_backend as mb
+          from src.backends.opencl_backend import OpenCLBackend
+          from src.cli import main
+          from src.embed_binary import CompiledKernelBinary
+
+          lib_path = os.environ["FAKE_METAL_LIB"]
+          with (
+              mock.patch.object(mb, "METAL_FRAMEWORK_PATH", lib_path),
+              mock.patch.object(OpenCLBackend, "is_available", return_value=False),
+          ):
+              out, err = io.StringIO(), io.StringIO()
+              rc = main(["list", "--json", "-v"], stdout=out, stderr=err)
+              assert rc == 0, (rc, err.getvalue())
+              devs = json.loads(out.getvalue())["devices"]
+              assert len(devs) == 2 and all(d["active_backend"] == "metal" for d in devs), devs
+
+              out_i, err_i = io.StringIO(), io.StringIO()
+              rc_i = main(["info", "--json", "-v"], stdout=out_i, stderr=err_i)
+              assert rc_i == 0, (rc_i, err_i.getvalue())
+              idevs = json.loads(out_i.getvalue())["devices"]
+              assert idevs[0]["name"] == "Fake Apple Metal GPU 0", idevs[0]
+              assert idevs[0]["architecture"] == "applegpu_g15g", idevs[0]
+              assert idevs[0]["registry_id"] == 0x1000003E8, idevs[0]
+              assert idevs[0]["capabilities"]["bf16"] is True, idevs[0]
+              assert idevs[0]["capabilities"]["tensor_fp16"] is True, idevs[0]
+              assert idevs[0]["capabilities"]["fp64"] is False, idevs[0]
+
+              backend = mb.MetalBackend()
+              bdevs = backend.enumerate_devices()
+              ctx = backend.create_context(bdevs[0])
+              try:
+                  for fmt, payload in (("metallib", b"MTLB\x00\x00\x00\x00"), ("msl_source", b"kernel void k() {}")):
+                      mod = backend.load_module(
+                          ctx,
+                          CompiledKernelBinary(backend="metal", workload="compute_fp32", entry_point="k", format=fmt, binary_bytes=payload),
+                      )
+                      dbuf = backend.alloc_device(ctx, 256)
+                      try:
+                          backend.launch_kernel(ctx, mod, "k", (4, 1, 1), (32, 1, 1), [dbuf, ctypes.c_uint32(128)], shared_mem=64)
+                          backend.synchronize(ctx)
+                      finally:
+                          backend.free_device(ctx, dbuf)
+                          backend.unload_module(ctx, mod)
+              finally:
+                  backend.destroy_context(ctx)
+
+              shim_cdll = ctypes.CDLL(lib_path)
+              shim_cdll.fake_metal_dispatch_count.restype = ctypes.c_uint64
+              assert shim_cdll.fake_metal_dispatch_count() == 2
+              print("PASS: Metal list/info + real arm64 objc_msgSend dispatch + zero ObjC leaks")
+          PY
+
+          # 5. Multi-GPU pass + ObjC retain/release & encoder leak check across 2 Metal GPUs
+          run_logged_expect_rc 0 "04_metal_2gpu_all_pass_leak_check" \
+            env FAKE_METAL_LIB="${SHIM_DIR}/libfake_metal.dylib" CROSS_GPU_NO_CACHE=1 FAKE_GPU_LEAK_CHECK=1 FAKE_GPU_VRAM_MIB=64 \
+            python3 - <<'PY'
+          import io, json, os, sys
+          from unittest import mock
+          import src.backends.metal_backend as mb
+          from src.backends.opencl_backend import OpenCLBackend
+          from src.cli import main
+
+          with (
+              mock.patch.object(mb, "METAL_FRAMEWORK_PATH", os.environ["FAKE_METAL_LIB"]),
+              mock.patch.object(OpenCLBackend, "is_available", return_value=False),
+          ):
+              out, err = io.StringIO(), io.StringIO()
+              rc = main(["run", "--device", "all", "--backend", "metal", "--test", "bandwidth-h2d,bandwidth-d2h", "--duration", "120ms", "--json", "-v"], stdout=out, stderr=err)
+              sys.stdout.write(out.getvalue())
+              sys.stderr.write(err.getvalue())
+              doc = json.loads(out.getvalue())
+              assert len(doc["results"]) == 4 and all(r["status"] == "passed" for r in doc["results"]), doc
+              sys.exit(int(rc))
+          PY
+
+          # 6. Targeted Metal GPU 0 D2H bitflip -> COMPUTE_ERROR (3) + zero leaks
+          run_logged_expect_rc 3 "05_metal_dev0_bitflip_rc3" \
+            env FAKE_METAL_LIB="${SHIM_DIR}/libfake_metal.dylib" CROSS_GPU_NO_CACHE=1 FAKE_GPU_LEAK_CHECK=1 FAKE_GPU_VRAM_MIB=64 \
+                FAKE_GPU_FAULT=bitflip FAKE_GPU_FAULT_BACKEND=metal FAKE_GPU_FAULT_DEVICE=0 \
+            python3 - <<'PY'
+          import io, json, os, sys
+          from unittest import mock
+          import src.backends.metal_backend as mb
+          from src.backends.opencl_backend import OpenCLBackend
+          from src.cli import main
+
+          with (
+              mock.patch.object(mb, "METAL_FRAMEWORK_PATH", os.environ["FAKE_METAL_LIB"]),
+              mock.patch.object(OpenCLBackend, "is_available", return_value=False),
+          ):
+              out, err = io.StringIO(), io.StringIO()
+              rc = main(["run", "--device", "all", "--backend", "metal", "--test", "bandwidth-d2h", "--duration", "120ms", "--json", "-v"], stdout=out, stderr=err)
+              sys.stdout.write(out.getvalue())
+              sys.stderr.write(err.getvalue())
+              doc = json.loads(out.getvalue())
+              failed = [r["device"] for r in doc["results"] if r["status"] == "failed"]
+              passed = [r["device"] for r in doc["results"] if r["status"] == "passed"]
+              assert failed == [0] and passed == [1], doc["results"]
+              sys.exit(int(rc))
+          PY
+
+          # 7. Targeted Metal GPU 1 MTLCommandBufferErrorTimeout -> HARDWARE_ERROR (4) + zero leaks
+          run_logged_expect_rc 4 "06_metal_dev1_timeout_rc4" \
+            env FAKE_METAL_LIB="${SHIM_DIR}/libfake_metal.dylib" CROSS_GPU_NO_CACHE=1 FAKE_GPU_LEAK_CHECK=1 FAKE_GPU_VRAM_MIB=64 \
+                FAKE_GPU_FAULT=gpu_timeout FAKE_GPU_FAULT_BACKEND=metal FAKE_GPU_FAULT_DEVICE=1 \
+            python3 - <<'PY'
+          import io, json, os, sys
+          from unittest import mock
+          import src.backends.metal_backend as mb
+          from src.backends.opencl_backend import OpenCLBackend
+          from src.cli import main
+
+          with (
+              mock.patch.object(mb, "METAL_FRAMEWORK_PATH", os.environ["FAKE_METAL_LIB"]),
+              mock.patch.object(OpenCLBackend, "is_available", return_value=False),
+          ):
+              out, err = io.StringIO(), io.StringIO()
+              rc = main(["run", "--device", "all", "--backend", "metal", "--test", "bandwidth-h2d", "--duration", "120ms", "--json", "-v"], stdout=out, stderr=err)
+              sys.stdout.write(out.getvalue())
+              sys.stderr.write(err.getvalue())
+              doc = json.loads(out.getvalue())
+              hw = [r["device"] for r in doc["results"] if r["status"] == "hardware_error"]
+              assert hw == [1], doc["results"]
+              sys.exit(int(rc))
+          PY
+
+      - name: Write job summary
+        if: always()
+        shell: bash
+        run: |
+          python3 .github/scripts/render_emulation_summary.py \
+            "macOS Metal Emulation Logs" "${RUNNER_TEMP}/emulation-logs" >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload command logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: emulation-logs-macos-metal
+          path: ${{ runner.temp }}/emulation-logs/
+          retention-days: 14
+          if-no-files-found: ignore
+
   foreign-arch-endianness:
     name: Foreign Arch & Endianness (${{ matrix.platform }})
     runs-on: ubuntu-latest
+    timeout-minutes: 35
     strategy:
       fail-fast: false
       matrix:
@@ -387,22 +870,39 @@ jobs:
                 local out="/logs/${name}.stdout.log"
                 local err="/logs/${name}.stderr.log"
                 local rc=0
-                printf "::group::[RUN] %s: %s\n" "${name}" "$*"
+                printf "%s\n" "$*" > "/logs/${name}.cmd"
+                printf "0\n" > "/logs/${name}.expected_rc"
                 "$@" >"${out}" 2>"${err}" || rc=$?
                 printf "%s\n" "${rc}" > "/logs/${name}.rc"
-                printf "%s\n" "--- stdout (${name}.stdout.log) ---"
-                cat "${out}"
-                if [[ -s "${err}" ]]; then
-                  printf "%s\n" "--- stderr (${name}.stderr.log) ---"
-                  cat "${err}"
+                if [[ "${rc}" -eq 0 ]]; then
+                  printf "::group::[PASS] %s (rc=%s): %s\n" "${name}" "${rc}" "$*"
+                  if [[ -s "${out}" ]]; then
+                    printf "%s\n" "--- stdout (${name}.stdout.log) ---"
+                    cat "${out}"
+                  fi
+                  if [[ -s "${err}" ]]; then
+                    printf "%s\n" "--- stderr (${name}.stderr.log) ---"
+                    cat "${err}"
+                  fi
+                  printf "::endgroup::\n"
+                  return 0
                 fi
-                printf "%s\n::endgroup::\n" "--- exit_code=${rc} ---"
+                printf "expected=0 actual=%s\n" "${rc}" > "/logs/${name}.failed"
+                printf "::error title=%s failed (rc=%s)::Command failed: %s\n" "${name}" "${rc}" "$*"
+                printf "======================================================================\n"
+                printf "[FAIL] %s: exit code %s\n" "${name}" "${rc}"
+                printf "Command: %s\n" "$*"
+                printf "%s\n" "--- stderr (${name}.stderr.log) ---"
+                if [[ -s "${err}" ]]; then tail -n 200 "${err}"; else echo "(empty)"; fi
+                printf "%s\n" "--- stdout (${name}.stdout.log) ---"
+                if [[ -s "${out}" ]]; then tail -n 200 "${out}"; else echo "(empty)"; fi
+                printf "======================================================================\n"
                 return "${rc}"
               }
 
               export DEBIAN_FRONTEND=noninteractive
-              apt-get update -qq
-              apt-get install -y --no-install-recommends python3 python3-setuptools python3-wheel python3-build
+              run_logged "00_apt_install" bash -euo pipefail -c \
+                "apt-get update -qq && apt-get install -y --no-install-recommends python3 python3-setuptools python3-wheel python3-build"
 
               cp -a /repo /tmp/work
               cd /tmp/work
@@ -421,19 +921,8 @@ jobs:
         if: always()
         shell: bash
         run: |
-          {
-            echo "### Foreign Arch Logs (${{ matrix.platform }})"
-            echo "| Command | Exit Code | Stdout (bytes) | Stderr (bytes) |"
-            echo "|---|---:|---:|---:|"
-            shopt -s nullglob
-            for rc_file in "${RUNNER_TEMP}/emulation-logs"/*.rc; do
-              name="$(basename "${rc_file}" .rc)"
-              rc="$(cat "${rc_file}")"
-              out_b="$(wc -c < "${RUNNER_TEMP}/emulation-logs/${name}.stdout.log" 2>/dev/null | tr -d ' ' || echo 0)"
-              err_b="$(wc -c < "${RUNNER_TEMP}/emulation-logs/${name}.stderr.log" 2>/dev/null | tr -d ' ' || echo 0)"
-              echo "| \`${name}\` | \`${rc}\` | ${out_b} | ${err_b} |"
-            done
-          } >> "${GITHUB_STEP_SUMMARY}"
+          python3 .github/scripts/render_emulation_summary.py \
+            "Foreign Arch Logs (${{ matrix.platform }})" "${RUNNER_TEMP}/emulation-logs" >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Upload command logs
         if: always()
@@ -447,22 +936,23 @@ jobs:
   distro-python-matrix:
     name: Distro / Libc / Python (${{ matrix.name }})
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
         include:
           - name: alpine-musl
             image: alpine:latest
-            install: "apk add --no-cache python3 py3-setuptools py3-wheel py3-build bash make"
+            install: "apk add --no-cache python3 py3-pip py3-setuptools py3-wheel py3-build bash make"
           - name: debian-trixie
             image: debian:trixie-slim
-            install: "apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends python3 python3-setuptools python3-wheel python3-build make"
+            install: "apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends python3 python3-pip python3-setuptools python3-wheel python3-build make"
           - name: fedora-latest
             image: fedora:latest
-            install: "dnf install -y -q python3 python3-setuptools python3-wheel python3-build make"
+            install: "dnf install -y -q python3 python3-pip python3-setuptools python3-wheel python3-build make"
           - name: archlinux-rolling
             image: archlinux:latest
-            install: "pacman -Syu --noconfirm --needed python python-setuptools python-wheel python-build make"
+            install: "pacman -Syu --noconfirm --needed python python-pip python-setuptools python-wheel python-build make"
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -486,20 +976,37 @@ jobs:
                 _out="/logs/${_name}.stdout.log"
                 _err="/logs/${_name}.stderr.log"
                 _rc=0
-                printf "::group::[RUN] %s: %s\n" "${_name}" "$*"
+                printf "%s\n" "$*" > "/logs/${_name}.cmd"
+                printf "0\n" > "/logs/${_name}.expected_rc"
                 "$@" >"${_out}" 2>"${_err}" || _rc=$?
                 printf "%s\n" "${_rc}" > "/logs/${_name}.rc"
-                printf "%s\n" "--- stdout (${_name}.stdout.log) ---"
-                cat "${_out}"
-                if [ -s "${_err}" ]; then
-                  printf "%s\n" "--- stderr (${_name}.stderr.log) ---"
-                  cat "${_err}"
+                if [ "${_rc}" -eq 0 ]; then
+                  printf "::group::[PASS] %s (rc=%s): %s\n" "${_name}" "${_rc}" "$*"
+                  if [ -s "${_out}" ]; then
+                    printf "%s\n" "--- stdout (${_name}.stdout.log) ---"
+                    cat "${_out}"
+                  fi
+                  if [ -s "${_err}" ]; then
+                    printf "%s\n" "--- stderr (${_name}.stderr.log) ---"
+                    cat "${_err}"
+                  fi
+                  printf "::endgroup::\n"
+                  return 0
                 fi
-                printf "%s\n::endgroup::\n" "--- exit_code=${_rc} ---"
+                printf "expected=0 actual=%s\n" "${_rc}" > "/logs/${_name}.failed"
+                printf "::error title=%s failed (rc=%s)::Command failed: %s\n" "${_name}" "${_rc}" "$*"
+                printf "======================================================================\n"
+                printf "[FAIL] %s: exit code %s\n" "${_name}" "${_rc}"
+                printf "Command: %s\n" "$*"
+                printf "%s\n" "--- stderr (${_name}.stderr.log) ---"
+                if [ -s "${_err}" ]; then tail -n 200 "${_err}"; else echo "(empty)"; fi
+                printf "%s\n" "--- stdout (${_name}.stdout.log) ---"
+                if [ -s "${_out}" ]; then tail -n 200 "${_out}"; else echo "(empty)"; fi
+                printf "======================================================================\n"
                 return "${_rc}"
               }
 
-              sh -eu -c "${INSTALL_CMD}"
+              run_logged "00_install_deps" sh -eu -c "${INSTALL_CMD}"
               cp -a /repo /tmp/work
               cd /tmp/work
               rm -rf build dist ./*.egg-info
@@ -511,25 +1018,22 @@ jobs:
               run_logged "05_completion_syntax" bash -n completions/cross-gpu.bash
               run_logged "06_offline_wheel_sdist" python3 -m build --no-isolation --outdir /tmp/dist .
               run_logged "07_make_install_stage" make install DESTDIR=/tmp/stage PREFIX=/usr
+              run_logged "08_verify_staged_tree" sh -eu -c "
+                test -x /tmp/stage/usr/bin/cross-gpu
+                test -f /tmp/stage/usr/share/man/man1/cross-gpu.1
+                test -f /tmp/stage/usr/share/bash-completion/completions/cross-gpu
+                test -f /tmp/stage/usr/share/zsh/site-functions/_cross-gpu
+                test -f /tmp/stage/usr/share/fish/vendor_completions.d/cross-gpu.fish
+                echo \"PASS: staged FHS tree verified under /tmp/stage/usr\"
+              "
             '
 
       - name: Write job summary
         if: always()
         shell: bash
         run: |
-          {
-            echo "### Distro / Python Logs (${{ matrix.name }})"
-            echo "| Command | Exit Code | Stdout (bytes) | Stderr (bytes) |"
-            echo "|---|---:|---:|---:|"
-            shopt -s nullglob
-            for rc_file in "${RUNNER_TEMP}/emulation-logs"/*.rc; do
-              name="$(basename "${rc_file}" .rc)"
-              rc="$(cat "${rc_file}")"
-              out_b="$(wc -c < "${RUNNER_TEMP}/emulation-logs/${name}.stdout.log" 2>/dev/null | tr -d ' ' || echo 0)"
-              err_b="$(wc -c < "${RUNNER_TEMP}/emulation-logs/${name}.stderr.log" 2>/dev/null | tr -d ' ' || echo 0)"
-              echo "| \`${name}\` | \`${rc}\` | ${out_b} | ${err_b} |"
-            done
-          } >> "${GITHUB_STEP_SUMMARY}"
+          python3 .github/scripts/render_emulation_summary.py \
+            "Distro / Python Logs (${{ matrix.name }})" "${RUNNER_TEMP}/emulation-logs" >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Upload command logs
         if: always()
@@ -543,16 +1047,20 @@ jobs:
   adversarial-container-constraints:
     name: Adversarial Constraints (Offline, Read-Only, noexec /tmp, Non-Root, No /dev/dri)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Pre-build pure-Python wheel on host
+      - name: Pre-build pure-Python wheel on host (PEP 668 isolated venv)
         shell: bash
         run: |
           set -euo pipefail
-          python3 -m pip install --quiet setuptools wheel build
-          python3 -m build --wheel --no-isolation --outdir "${RUNNER_TEMP}/wheels" .
+          BUILD_VENV="${RUNNER_TEMP}/wheel-build-venv"
+          python3 -m venv "${BUILD_VENV}"
+          "${BUILD_VENV}/bin/pip" install --quiet setuptools wheel build
+          "${BUILD_VENV}/bin/python" -m build --wheel --no-isolation --outdir "${RUNNER_TEMP}/wheels" .
+          chmod -R a+rX "${RUNNER_TEMP}/wheels"
 
       - name: Run locked-down offline container test with logging
         shell: bash
@@ -560,53 +1068,87 @@ jobs:
           set -euo pipefail
           LOG_DIR="${RUNNER_TEMP}/emulation-logs"
           mkdir -p "${LOG_DIR}"
+          chmod 0777 "${LOG_DIR}"
 
-          # Pure-Python CrossGPU must run cleanly even with --tmpfs /tmp:rw,noexec,nosuid,
+          # Pure-Python CrossGPU must run cleanly with --tmpfs /tmp:rw,noexec,nosuid,
           # --read-only rootfs, --network=none, nobody user (65534), and no /dev/dri.
-          rc=0
           docker run --rm \
             --network=none \
             --read-only \
             --tmpfs /tmp:rw,noexec,nosuid,size=256m \
             --user 65534:65534 \
             -e HOME=/tmp \
+            -e TMPDIR=/tmp \
             -e XDG_CACHE_HOME=/tmp/cache \
+            -e PIP_NO_CACHE_DIR=1 \
+            -e PIP_DISABLE_PIP_VERSION_CHECK=1 \
             -v "${RUNNER_TEMP}/wheels:/wheels:ro" \
+            -v "${LOG_DIR}:/logs:rw" \
             python:3.12-slim bash -euo pipefail -c '
-              run_inner() {
+              run_logged() {
                 local name="$1"; shift
-                local out="/tmp/${name}.stdout.log"
-                local err="/tmp/${name}.stderr.log"
-                local irc=0
-                printf "::group::[RUN] %s: %s\n" "${name}" "$*"
-                "$@" >"${out}" 2>"${err}" || irc=$?
-                printf "%s\n" "--- stdout (${name}) ---"
-                cat "${out}"
-                if [[ -s "${err}" ]]; then
-                  printf "%s\n" "--- stderr (${name}) ---"
-                  cat "${err}"
+                local out="/logs/${name}.stdout.log"
+                local err="/logs/${name}.stderr.log"
+                local rc=0
+                printf "%s\n" "$*" > "/logs/${name}.cmd"
+                printf "0\n" > "/logs/${name}.expected_rc"
+                "$@" >"${out}" 2>"${err}" || rc=$?
+                printf "%s\n" "${rc}" > "/logs/${name}.rc"
+                if [[ "${rc}" -eq 0 ]]; then
+                  printf "::group::[PASS] %s (rc=%s): %s\n" "${name}" "${rc}" "$*"
+                  if [[ -s "${out}" ]]; then
+                    printf "%s\n" "--- stdout (${name}.stdout.log) ---"
+                    cat "${out}"
+                  fi
+                  if [[ -s "${err}" ]]; then
+                    printf "%s\n" "--- stderr (${name}.stderr.log) ---"
+                    cat "${err}"
+                  fi
+                  printf "::endgroup::\n"
+                  return 0
                 fi
-                printf "%s\n::endgroup::\n" "--- exit_code=${irc} ---"
-                return "${irc}"
+                printf "expected=0 actual=%s\n" "${rc}" > "/logs/${name}.failed"
+                printf "::error title=%s failed (rc=%s)::Command failed: %s\n" "${name}" "${rc}" "$*"
+                printf "======================================================================\n"
+                printf "[FAIL] %s: exit code %s\n" "${name}" "${rc}"
+                printf "Command: %s\n" "$*"
+                printf "%s\n" "--- stderr (${name}.stderr.log) ---"
+                if [[ -s "${err}" ]]; then tail -n 200 "${err}"; else echo "(empty)"; fi
+                printf "%s\n" "--- stdout (${name}.stdout.log) ---"
+                if [[ -s "${out}" ]]; then tail -n 200 "${out}"; else echo "(empty)"; fi
+                printf "======================================================================\n"
+                return "${rc}"
               }
 
-              run_inner "01_venv_create" python3 -m venv /tmp/venv
-              run_inner "02_pip_install_offline" /tmp/venv/bin/python -m pip install --no-index --no-deps /wheels/*.whl
+              run_logged "01_pip_install_target" python3 -m pip install --no-index --no-deps --no-cache-dir --target /tmp/site /wheels/*.whl
+              export PYTHONPATH=/tmp/site
               cd /tmp
-              run_inner "03_version" /tmp/venv/bin/python -m cross_gpu --version
-              run_inner "04_embed_verify" /tmp/venv/bin/python -m cross_gpu.embed_binary verify
-              run_inner "05_list" /tmp/venv/bin/python -m cross_gpu list --json -v
-              run_inner "05_list_json_check" python3 -m json.tool /tmp/05_list.stdout.log
-              run_inner "06_info" /tmp/venv/bin/python -m cross_gpu info --json -v
-              run_inner "06_info_json_check" python3 -m json.tool /tmp/06_info.stdout.log
-              run_inner "07_no_cache_info" env CROSS_GPU_NO_CACHE=1 /tmp/venv/bin/python -m cross_gpu info --json -v
-              run_inner "08_site_packages_check" /tmp/venv/bin/python -c \
-                "import sysconfig, pathlib; sp = pathlib.Path(sysconfig.get_path(\"purelib\")); assert (sp / \"cross_gpu\").is_dir(); assert not (sp / \"src\").exists(); assert not (sp / \"cross_gpu\" / \"telemetry\").exists()"
-            ' > >(tee "${LOG_DIR}/adversarial_container.stdout.log") \
-              2> >(tee "${LOG_DIR}/adversarial_container.stderr.log" >&2) || rc=$?
+              run_logged "02_version" python3 -m cross_gpu --version
+              run_logged "03_embed_verify" python3 -m cross_gpu.embed_binary verify
+              run_logged "04_list" python3 -m cross_gpu list --json -v
+              run_logged "04_list_json_check" python3 -m json.tool /logs/04_list.stdout.log
+              run_logged "05_info" python3 -m cross_gpu info --json -v
+              run_logged "05_info_json_check" python3 -m json.tool /logs/05_info.stdout.log
+              run_logged "06_no_cache_info" env CROSS_GPU_NO_CACHE=1 python3 -m cross_gpu info --json -v
+              run_logged "07_site_packages_check" python3 -c \
+                "import pathlib; sp = pathlib.Path(\"/tmp/site\"); assert (sp / \"cross_gpu\").is_dir(); assert not (sp / \"src\").exists(); assert not (sp / \"cross_gpu\" / \"telemetry\").exists(); print(\"PASS: site-packages layout verified\")"
+              run_logged "08_verify_noexec_tmp" bash -euo pipefail -c "
+                printf \"%s\n\" \"#!/bin/sh\" \"exit 0\" > /tmp/noexec_probe.sh
+                chmod +x /tmp/noexec_probe.sh
+                if /tmp/noexec_probe.sh 2>/dev/null; then
+                  echo \"FAIL: /tmp allowed script execution despite noexec mount\" >&2
+                  exit 1
+                fi
+                echo \"PASS: /tmp rejected direct execution as expected (noexec enforced)\"
+              "
+            '
 
-          printf '%s\n' "${rc}" > "${LOG_DIR}/adversarial_container.rc"
-          exit "${rc}"
+      - name: Write job summary
+        if: always()
+        shell: bash
+        run: |
+          python3 .github/scripts/render_emulation_summary.py \
+            "Adversarial Container Logs" "${RUNNER_TEMP}/emulation-logs" >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Upload command logs
         if: always()
