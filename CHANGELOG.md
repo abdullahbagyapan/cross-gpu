@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-11-23
+
+### Added
+- Docker-only multi-backend & multi-architecture emulation harness (`scripts/emulate.sh`) covering 17 targets across 4 suites (`arch`, `backends`, `distros`, `adversarial`), with Bash 3.2+ compatibility, automatic `tonistiigi/binfmt` registration, per-step diagnostics, and Markdown summary reports.
+- Container-compiled C11 fake-driver ABI shims (`scripts/shims/`) covering CUDA + NVRTC, HIP + HIPRTC, Level Zero, OpenCL, and a portable pure-C11 Apple Metal Objective-C `objc_msgSend` shim (`fake_metal.c`) with atomic resource/pool/encoder leak checks (`exit 99`) and targeted fault injection (`COMPUTE_ERROR=3`, `HARDWARE_ERROR=4`).
+- GitHub Actions Environment Emulation workflow (`.github/workflows/emulation.yml`) running all 17 `./scripts/emulate.sh` targets in parallel with `::error::` annotations, `$GITHUB_STEP_SUMMARY` failure diagnostics, and log artifact uploads.
+- Testing and Docker emulation guide (`docs/testing.md`) linked from `README.md`, `docs/README.md`, and `docs/contributing.md`.
+
+### Fixed
+- Set `PIP_BREAK_SYSTEM_PACKAGES=1` automatically in `Makefile` `install` when `DESTDIR` is specified so FHS staging succeeds cleanly on PEP 668 externally-managed Linux distributions.
+
 ## [0.1.1] - 2026-11-22
 
 ### Added
