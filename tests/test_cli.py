@@ -350,9 +350,11 @@ class TestCLI(unittest.TestCase):
             [str(exe), "--help"],
             [str(exe), "--version"],
             [sys.executable, "-m", "src", "--version"],
+            [sys.executable, "-m", "src.cli", "--version"],
         ):
             res = subprocess.run(cmd, capture_output=True, text=True, check=False)
             self.assertEqual(res.returncode, 0, res.stderr)
+            self.assertTrue(res.stdout.strip(), f"Empty stdout for {cmd}")
 
     def test_help_epilog_examples_and_stdout_routing(self) -> None:
         out, err = io.StringIO(), io.StringIO()

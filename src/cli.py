@@ -1045,3 +1045,7 @@ def main(
         err.write(f"cross-gpu: error: {exc}\n")
         err.flush()
         return int(ExitCode.USAGE_ERROR)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
