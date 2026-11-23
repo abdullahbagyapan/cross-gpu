@@ -53,6 +53,7 @@ Full documentation lives under [`docs/`](docs/README.md):
 - [Backends & Capability Matrix](docs/backends.md) — CUDA, HIP, Level Zero, Metal, and OpenCL runtimes, error mapping, and 5×20 support table
 - [Workloads & Verification](docs/workloads.md) — all 20 workloads, SI unit accounting, verification rules, calibration, and VRAM guardrails
 - [Packaging & Distribution](docs/packaging.md) — offline distro builds, FHS install paths, `sdist` verification, and environment overrides
+- [Testing & Docker Emulation](docs/testing.md) — offline unit suite, real-GPU smoke tests, Docker-only multi-backend & multi-arch emulator (`scripts/emulate.sh`), C11 ABI shims, and GitHub Actions workflows
 - [Contributing](docs/contributing.md) — kernel authoring, `embed_binary verify`/`list`, coding standards, and Conventional Commits
 - [Manual Page (`cross-gpu.1`)](docs/cross-gpu.1) — Unix `man(1)` page
 - [Changelog](CHANGELOG.md) — release history

@@ -62,6 +62,13 @@ On machines with a real GPU, you can additionally run the opt-in end-to-end hard
 CROSS_GPU_HW_TESTS=1 python3 -m unittest tests.test_hardware_smoke -v
 ```
 
+To exercise all 5 GPU backends, 5 CPU architectures (including big-endian `s390x`), 4 Linux distros, and locked-down containers via Docker, see [Testing & Docker Emulation](testing.md):
+
+```sh
+./scripts/emulate.sh --list
+./scripts/emulate.sh --suite backends
+```
+
 ---
 
 ## 4. Atomic Commits & Conventional Commits
