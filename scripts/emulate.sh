@@ -466,6 +466,16 @@ assert_empty_stderr() {
     return 1
   fi
 }
+
+assert_stderr_contains() {
+  local name="$1"
+  local needle="$2"
+  if ! grep -Fq "${needle}" "/logs/${name}.stderr.log" 2>/dev/null; then
+    printf '  [FAIL] %s stderr missing expected diagnostic %s:\n' "${name}" "${needle}" >&2
+    cat "/logs/${name}.stderr.log" >&2 || true
+    return 1
+  fi
+}
 EOF
 }
 
@@ -544,11 +554,11 @@ run_logged "03_embed_verify" python3 -m src.embed_binary verify
 run_logged "04_unittest" python3 -m unittest discover -s tests -v
 
 run_cli_json_expect 0 "05_list_json" python3 -m src.cli list --json
-assert_empty_stderr "05_list_json"
+assert_stderr_contains "05_list_json" "no compatible GPUs detected"
 run_logged "05_list_json_check" python3 -m json.tool /logs/05_list_json.stdout.log
 
 run_cli_json_expect 0 "06_info_json" python3 -m src.cli info --json
-assert_empty_stderr "06_info_json"
+assert_stderr_contains "06_info_json" "no compatible GPUs detected"
 run_logged "06_info_json_check" python3 -m json.tool /logs/06_info_json.stdout.log
 
 run_logged "07_list_verbose_json" python3 -m src.cli list --json -v
@@ -1317,7 +1327,7 @@ run_logged "01_clinfo" clinfo
 
 # 1. Verify production CrossGPU refuses silent CPU fallback when only PoCL CPU device exists
 run_cli_json_expect 0 "02_list_no_gpu" python3 -m src.cli list --json
-assert_empty_stderr "02_list_no_gpu"
+assert_stderr_contains "02_list_no_gpu" "no compatible GPUs detected"
 run_logged "02_assert_zero_gpu" python3 -c '
 import json, sys
 devs = json.load(open(sys.argv[1], encoding="utf-8")).get("devices", [])
@@ -1327,7 +1337,7 @@ print("OK: 0 GPU devices exposed on PoCL-only host")
 
 run_cli_json_expect 2 "03_run_no_gpu_init_error" \
   python3 -m src.cli run --backend opencl --test compute-fp32 --duration 100ms --json
-assert_empty_stderr "03_run_no_gpu_init_error"
+assert_stderr_contains "03_run_no_gpu_init_error" "cross-gpu: error:"
 run_logged "03_assert_init_error_json" python3 -c '
 import json, sys
 doc = json.load(open(sys.argv[1], encoding="utf-8"))
@@ -1718,11 +1728,12 @@ run_inner() {
   return "${irc}"
 }
 
-assert_empty_stderr() {
+assert_stderr_contains() {
   local name="$1"
-  if [[ -s "/tmp/${name}.stderr.log" ]]; then
-    printf '  [FAIL] %s polluted stderr in --json mode:\n' "${name}" >&2
-    cat "/tmp/${name}.stderr.log" >&2
+  local needle="$2"
+  if ! grep -Fq "${needle}" "/tmp/${name}.stderr.log" 2>/dev/null; then
+    printf '  [FAIL] %s stderr missing expected diagnostic %s:\n' "${name}" "${needle}" >&2
+    cat "/tmp/${name}.stderr.log" >&2 || true
     return 1
   fi
 }
@@ -1735,15 +1746,16 @@ run_inner "02_version" python3 -m cross_gpu --version
 run_inner "03_embed_verify" python3 -m cross_gpu.embed_binary verify
 
 run_inner "04_list_json" python3 -m cross_gpu list --json
-assert_empty_stderr "04_list_json"
+assert_stderr_contains "04_list_json" "no compatible GPUs detected"
 run_inner "04_list_json_check" python3 -m json.tool /tmp/04_list_json.stdout.log
 
 run_inner "05_info_json" python3 -m cross_gpu info --json
-assert_empty_stderr "05_info_json"
+assert_stderr_contains "05_info_json" "no compatible GPUs detected"
 run_inner "05_info_json_check" python3 -m json.tool /tmp/05_info_json.stdout.log
 
 run_inner "06_no_cache_info_json" env CROSS_GPU_NO_CACHE=1 python3 -m cross_gpu info --json
-assert_empty_stderr "06_no_cache_info_json"
+assert_stderr_contains "06_no_cache_info_json" "no compatible GPUs detected"
+run_inner "06_no_cache_info_json_check" python3 -m json.tool /tmp/06_no_cache_info_json.stdout.log
 
 run_inner "07_site_packages_check" python3 -c '
 import pathlib
