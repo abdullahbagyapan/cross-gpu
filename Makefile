@@ -19,7 +19,7 @@ check:
 	$(PYTHON) -m src.embed_binary verify
 
 install:
-	$(if $(DESTDIR),PIP_BREAK_SYSTEM_PACKAGES=1 ,)$(PYTHON) -m pip install --no-build-isolation --no-deps \
+	$(if $(DESTDIR),PIP_BREAK_SYSTEM_PACKAGES=1 ,)$(if $(filter /usr,$(PREFIX)),DEB_PYTHON_INSTALL_LAYOUT=deb ,)$(PYTHON) -m pip install --no-build-isolation --no-deps \
 		--prefix="$(PREFIX)" $(if $(DESTDIR),--root="$(DESTDIR)",) .
 	install -d "$(DESTDIR)$(MANDIR)"
 	install -m 644 docs/cross-gpu.1 "$(DESTDIR)$(MANDIR)/cross-gpu.1"
