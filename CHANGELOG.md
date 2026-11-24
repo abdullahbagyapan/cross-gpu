@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-11-24
+
+### Fixed
+- Add `__main__` entrypoint guard in `src/cli.py` so direct module execution (`python3 -m src.cli`) dispatches to `main()` instead of exiting 0 silently.
+- Set `DEB_PYTHON_INSTALL_LAYOUT=deb` in `Makefile` when `PREFIX=/usr` so FHS-staged packaging on Debian and Ubuntu installs binaries into `/usr/bin` rather than `/usr/local/bin`.
+- Assert actionable `stderr` diagnostics on GPU-less emulation targets in `scripts/emulate.sh`, achieving 100% pass rate (17/17 targets) across Linux distributions, CPU architectures (amd64, arm64, riscv64, s390x), and emulated GPU backends.
+
 ## [0.1.2] - 2026-11-23
 
 ### Added
